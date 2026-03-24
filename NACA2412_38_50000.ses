@@ -1,0 +1,23 @@
+load .\NACA2412.dat
+ppar
+n 30
+
+
+oper
+visc 50000
+VPAR
+XTR
+1
+1
+
+pacc
+.\NACA2412_38_50000.pol
+
+aseq
+-5
+10
+1
+pacc
+visc
+
+quit

@@ -1,71 +1,607 @@
 import numpy as np
+from pybemt.solver import Solver
 
-def create_battery(Ns, Np):
+# Generate Propeller, which will be used to create .ini file 
+def generate_propeller(
+    diameter,
+    radius_hub,
+    chord_root,
+    chord_tip,
+    pitch_root,
+    pitch_tip,
+    rpm,
+    airfoil
+):
+    """
+    Full propeller generator that combines: 
+        
+        Radius generation, 
+        Linear chord and pitch distributions,
+        Constant airfoil assignment,
+        Fluid, 
+        Solver ,
+        Case configuration,
+        Rotor data (nblades, diameter, radius_hub)
+
+    Fixed internal parameters:
+        clustering = 1.2
+        epsilon = 1e-3
+        v_inf = 0
+        solver = brute
+        rho = 1.225
+        mu = 1.81e-5
+        nblades = 2
+        n_elements = sclaed based on previous data set based on blade diameter (40 elements/0.254in)
+
+    """
+
+    # Fixed values
+    clustering = 1.2
+    epsilon = 1e-3
+
+    # Radius generation
+    R = diameter / 2
+    #scale the number elements based on previous data set
+    n_elements = round((40/0.254) * diameter)
+    xi = np.linspace(epsilon, 1, n_elements)
+    radius = R * (xi ** clustering)
+
+    # Chord and Pitch generation
+    r_root = radius[0]
+    r_tip = R
+
+    t = (radius - r_root) / (r_tip - r_root)
+    
+    # Linear equation modeling
+    chord = chord_root + t * (chord_tip - chord_root)
+    pitch = pitch_root + t * (pitch_tip - pitch_root)
+
+    # Airfoil (assumed constant along entire blade)
+    sections = [airfoil] * n_elements
+
+    # Fluid / Solver / Case Requirements
+    fluid = {
+        "rho": 1.225,
+        "mu": 1.81e-5
+    }
+
+    solver = {
+        "solver": "brute"
+    }
+
+    case = {
+        "v_inf": 0.0,
+        "rpm": rpm
+    }
+
+    # Function Output
+    return {
+        "nblades": 2,
+        "diameter": diameter,
+        "radius_hub": radius_hub,
+        "radius": radius,
+        "chord": chord,
+        "pitch": pitch,
+        "sections": sections,
+        "fluid": fluid,
+        "solver": solver,
+        "case": case
+    }
+
+#Example Calling
+
+#prop = generate_propeller(
+    #diameter=0.254,
+    #radius_hub=0.01016,
+    #nblades=2,
+    #chord_root=0.019,
+    #chord_tip=0.010,
+    #pitch_root=76,
+    #pitch_tip=9.5,
+    #rpm=21000,
+    #airfoil="NACA_4412"
+#)
+
+
+# Example Calling
+#radius = prop["radius"]
+#chord = prop["chord"]
+#pitch = prop["pitch"]
+#sections = prop["sections"]
+
+#fluid = prop["fluid"]
+#solver = prop["solver"]
+#case = prop["case"]
+
+# rotor data
+#print("nblades =", prop["nblades"])
+#print("diameter =", prop["diameter"])
+#print("radius_hub =", prop["radius_hub"])
+
+# Print Check Everything Else
+#print("\n[rotor]")
+#print("radius =", " ".join(map(str, radius)))
+#print("chord  =", " ".join(map(str, chord)))
+#print("pitch  =", " ".join(map(str, pitch)))
+#print("section =", " ".join(sections))
+
+#print("\n[fluid]")
+#print("rho =", fluid["rho"])
+#print("mu  =", fluid["mu"])
+
+#print("\n[solver]")
+#print("solver =", solver["solver"])
+
+#print("\n[case]")
+#print("v_inf =", case["v_inf"])
+#print("rpm   =", case["rpm"])
+
+
+
+# .ini file automation 
+def write_ini_file(prop, filename):
+    """
+    Writes the propeller dictionary to a .ini file
+    in the exact required format.
+    """
+
+    with open(filename, "w") as f:
+
+        # Rotor formatting/sorting
+        f.write("[rotor]\n")
+        f.write(f"nblades = {prop['nblades']}\n")
+        f.write(f"diameter = {prop['diameter']}\n")
+        f.write(f"radius_hub = {prop['radius_hub']}\n")
+
+        f.write("radius = " + " ".join(map(str, prop["radius"])) + "\n")
+        f.write("chord = " + " ".join(map(str, prop["chord"])) + "\n")
+        f.write("pitch = " + " ".join(map(str, prop["pitch"])) + "\n")
+        f.write("section = " + " ".join(prop["sections"]) + "\n\n")
+        # Extra line needed for formatting reasons
+        f.write("\n")
+        # Fluid formatting/sorting
+        f.write("[fluid]\n")
+        f.write(f"rho = {prop['fluid']['rho']}\n")
+        f.write(f"mu = {prop['fluid']['mu']}\n\n")
+
+        # Solver formatting/sorting
+        f.write("[solver]\n")
+        f.write(f"solver = {prop['solver']['solver']}\n\n")
+
+        # Case formatting/sorting
+        f.write("[case]\n")
+        f.write(f"v_inf = {prop['case']['v_inf']}\n")
+        f.write(f"rpm = {prop['case']['rpm']}\n")
+
+# Example .ini file creation check
+#prop = generate_propeller(
+    #diameter=0.254,
+    # Keep radius const.
+    #radius_hub=0.01016,
+    # Keep nblades const.
+    ###nblades=2,
+    #chord_root=0.019,
+    #chord_tip=0.010,
+    #pitch_root=76,
+    #pitch_tip=9.5,
+    # This will stay our initial rpm guess
+    #rpm=21000,
+    #airfoil="NACA_4412"
+#)
+
+write_ini_file(prop, "propeller.ini")
+
+
+
+# # # # # # # # # # # # # #
+#what are we doing for the battery?
+#def create_battery(Ns, Np):
     # Ns: number of cells in series
     # Np: number of cells in parallel
-    battery = {
-        'Ns' : Ns,
-        'Np' : Np,
-        'V_cell' : 3.7, # V, nominal voltage of each cell
-        'C_cell' : 2.5, # Ah, capacity of each cell
-        'm_cell' : 0.045 # kg, mass of each cell
+    #battery = {
+        #'Ns' : Ns,
+        #'Np' : Np,
+        #'V_cell' : 3.7, # V, nominal voltage of each cell
+        #'C_cell' : 2.5, # Ah, capacity of each cell
+        #'m_cell' : 0.045 # kg, mass of each cell
+    #}
+    #return battery
+
+
+
+# MOTOR #
+
+def get_motor_from_kv(kv):
+
+    motor_db = {
+        2300: {'mass_g': 9.1, 'V_rate': 24.0, 'R_ohm': 0.614},
+        3600: {'mass_g': 9.1, 'V_rate': 16.0, 'R_ohm': 0.35},
+        3800: {'mass_g': 9.4, 'V_rate': 12.0, 'R_ohm': 0.105}
     }
-    return battery
 
+    if kv not in motor_db:
+        raise ValueError(f"Kv {kv} not in motor database")
 
-def create_motor(kv, I0, R, V):
-    # kv: RPM/V
-    # I0: A, idle current
-    # R: Ohm, widning resistance
-    # V_rate: V, rated voltage (cant exceed)
-    motor = {
-        'kt_NmpA' : 60/(2*np.pi*kv), # Nm/A
-        'ke_Vsprad' : 60/(2*np.pi*kv),
-        'I0_A' : I0,
-        'R_ohm' : R,
-        'V_rate' : V
+    data = motor_db[kv]
+
+    return {
+        'kv_rpm_per_V': kv,
+        'kt_NmpA': 60/(2*np.pi*kv),
+        'R_ohm': data['R_ohm'],
+        'V_rate': data['V_rate'],
+        'mass_g': data['mass_g']
     }
-    return motor
 
-def create_structure():
-    return 1
+def battery_terminal_voltage(I, V_rate):
+    # Assumed constants
+    Voc = V_rate
+    Rbatt = 0.05
+    return Voc - I * Rbatt
 
-def create_propellor(airfoil, chord, pitch, prop_diam):
-    prop = {
-        'airfoil' : airfoil,
-        'chord' : chord,
-        'pitch' : pitch,
-        'diameter' : prop_diam
+def motor_model(kv, Q):
+
+    motor = get_motor_from_kv(kv)
+
+    kt = motor['kt_NmpA']
+    kv_val = motor['kv_rpm_per_V']
+    Rm = motor['R_ohm']
+    V_rate = motor['V_rate']
+
+    # Current from torque (used internally)
+    I = Q / kt
+
+    # Battery terminal voltage
+    Vterm = battery_terminal_voltage(I, V_rate)
+
+    # Voltage constraint check
+    if Vterm > V_rate:
+        raise ValueError(
+            f"Motor overvolted: Vterm={Vterm:.2f}V exceeds V_rate={V_rate}V"
+        )
+
+    # Electrical RPM
+    RPM = kv_val * (Vterm - I * Rm)
+
+    # Angular velocity
+    omega = RPM * 2 * np.pi / 60
+
+    # Mechanical power
+    P = Q * omega
+
+    return {
+        'RPM': RPM,
+        'P_W': P,
+        'mass_g': motor['mass_g'],
+        'V_rate': V_rate
     }
-    return prop
 
 
-motor_2300kv = create_motor(2300, 0.53, 1.23)
-motor_3600kv = create_motor(3600, 0.66, 0.7)
-motor_3800kv = create_motor(3800, 0.75, 0.21)
-motors = [motor_2300kv, motor_3600kv, motor_3800kv]
+# BATTERY #
 
-def create_design_vector(batt_series, batt_parallel, motor, prop_diam, airfoil, chord, pitch):
-    design_vector = {
-        'battery' : create_battery(batt_series, batt_parallel),
-        'motor' : motor,
-        'propellor' : create_propellor(airfoil, chord, pitch, prop_diam)
+def create_battery(Np, V_batt):
+    return {
+        'Np': Np,
+        'V_batt': V_batt,
+        'C_cell_Ah': 2.2,   # per cell capacity
+        'm_cell_kg': 0.045  # per cell mass
     }
-    return design_vector
+
 
 def battery_calcs(battery):
-    battery['Voltage_V'] = battery['Ns'] * 3.7
-    battery['Capacity_mAh'] = battery['Np'] * 2200
-    battery['Mass_kg'] = battery['Np'] * battery['Ns'] * 0.045
-    battery['Length_mm'] = 70
-    battery['Width_mm'] = 43
-    battery['Height_mm'] = 6*battery['Ns']*battery['Np']
-    return battery
 
-def matt_structures(INPUTS):
+    Np = battery['Np']
+    V_batt = battery['V_batt']
+
+    # Map voltage to number of series cells (Ns)
+    if V_batt == 24:
+        Ns = 6
+    elif V_batt == 16:
+        Ns = 4
+    elif V_batt == 12:
+        Ns = 3
+    else:
+        raise ValueError(f"Unsupported battery voltage: {V_batt}")
+
+    # Total capacity (parallel adds)
+    total_capacity_Ah = Np * battery['C_cell_Ah']
+
+    # Total mass (all cells count)
+    total_mass_kg = Ns * Np * battery['m_cell_kg']
+
+    return total_mass_kg, total_capacity_Ah
+
+
+
+
+
+ 
+#def create_structure():
+    #return 1
+
+#def create_propellor(airfoil, chord, pitch, prop_diam):
+    #prop = {
+        #'airfoil' : airfoil,
+        #'chord' : chord,
+        #'pitch' : pitch,
+        #'diameter' : prop_diam
+    #}
+    #return prop
+
+#def create_design_vector(batt_series, batt_parallel, motor, prop_diam, airfoil, chord, pitch):
+    #design_vector = {
+        #'battery' : create_battery(batt_series, batt_parallel),
+        #'motor' : motor,
+        #'propellor' : create_propellor(airfoil, chord, pitch, prop_diam)
+    #}
+    #return design_vector
+
+#def battery_calcs(battery):
+    #battery['Voltage_V'] = battery['Ns'] * 3.7
+    #battery['Capacity_mAh'] = battery['Np'] * 2200
+    #battery['Mass_kg'] = battery['Np'] * battery['Ns'] * 0.045
+    #battery['Length_mm'] = 70
+    #battery['Width_mm'] = 43
+    #battery['Height_mm'] = 6*battery['Ns']*battery['Np']
+    #return battery
+
+
+
+
+
+
+# STRUCTURES #
+
+def matt_structures(motor_mass, battery_mass, propeller_thrust):
     mass = 1
     return mass
 
-def propellor_calcs():
-    return 1
 
+
+############NEED TO WRITE THIS###########################################################
+# Function to update RPM in .ini file
+def write_rotor_config(filename, rpm):
+    # Open the config file in read mode
+    with open(filename, "r") as f:
+        lines = f.readlines()
+# Loop through each line to find the rpm entry
+    for i, line in enumerate(lines):
+        if line.strip().startswith("rpm"):
+            lines[i] = f"rpm = {rpm}\n"
+# Write the updated lines back to the file
+    with open(filename, "w") as f:
+        f.writelines(lines)
+
+# Function to run the BEMT solver
+def run_prop_analysis(config_file):
+    # Create solver object using the .ini file
+    solver = Solver(config_file)
+    # Run the solver
+    # Returns:
+    # T = thrust (N)
+    # Q = torque (N·m)
+    # P = power (W)
+    # sections = blade element breakdown (not used here)
+    T, Q, P, sections = solver.run()
+    return T, Q, P
+
+
+# Main propeller function
+# Testing out generated confi_file, the previous one was "apc10x5.ini"
+def propellor_calcs(config_file="propeller.ini"):
+    """
+    Reads rpm from the .ini file, runs the BEMT solver,
+    and returns thrust, torque, and power.
+    """
+
+    # Read current rpm from config file
+    rpm = None
+    with open(config_file, "r") as f:
+        for line in f:
+            # Look for the line that defines rpm
+            if line.strip().startswith("rpm"):
+                # Extract the numeric value after '='
+                rpm = float(line.split("=")[1])
+                break
+# If rpm is not found, raise an error
+    if rpm is None:
+        raise ValueError("RPM not found in config file.")
+
+    # Run solver (geometry + rpm already defined in .ini)
+    # T = thrust (Newtons)
+    # Q = torque (N·m)
+    # P = power (Watts)
+    T, Q, P = run_prop_analysis(config_file)
+
+    return T, Q, P, rpm
+#########################################################################################
+# New Function
+def propellor_calcs2(
+    config_file="propeller.ini",
+    motor_mass_kg=0.0,
+    battery_mass_kg=0.0,
+    structure_mass_kg=0.25,
+    FOS=1.5,
+    rpm_min=1000,
+    rpm_max=50000,
+    tol=1e-2
+):
+    """
+    Computes minimum RPM required for hover (with FOS),
+    then runs BEMT at that RPM.
+
+    Returns:
+        rpm, T, Q, P
+    """
+
+    # Mass
+    total_mass_kg = structure_mass_kg + 4 * motor_mass_kg + battery_mass_kg
+
+    g = 9.81
+
+    # Required Thrust per motor
+    T_required_total = FOS * total_mass_kg * g
+    T_target = T_required_total / 4
+
+    # RPM Bisection
+    rpm_low = rpm_min
+    rpm_high = rpm_max
+
+    rpm_solution = None
+    T_solution = None
+
+    for _ in range(50):
+
+        rpm_mid = 0.5 * (rpm_low + rpm_high)
+
+        # Update config file
+        write_rotor_config(config_file, rpm_mid)
+
+        # Run BEMT
+        T, Q, P = run_prop_analysis(config_file)
+
+        # Bisection update
+        if T < T_target:
+            rpm_low = rpm_mid
+        else:
+            rpm_high = rpm_mid
+
+        # Convergence check
+        if abs(T - T_target) < tol:
+            rpm_solution = rpm_mid
+            T_solution = T
+            break
+
+        rpm_solution = rpm_mid
+        T_solution = T
+
+    # Final eval at converged RPM
+    write_rotor_config(config_file, rpm_solution)
+    T, Q, P = run_prop_analysis(config_file)
+
+    return rpm_solution, T, Q, P
+
+
+
+############ INPUT #############
+
+
+# Airfoil list to be used
+airfoil_list = [
+    "xfoild_cl_cd_Re5000",
+    "NACA_4412",
+    "NACA_2412",
+    "NACA_0012"
+]
+'''
+# Optimization Input Vector
+x = [
+    kv,               # motor kV
+    Np,               # number of batteries in parallel
+    prop_diameter,
+    chord_root,
+    chord_tip,
+    n_blades,
+    pitch_root,
+    pitch_tip,
+    airfoil_index   # integer to index into airfoil_list
+]
+'''
+x = [
+    2300,        # kv
+    1,           # Np
+    0.254,       # diameter
+    0.019,       # chord_root
+    0.010,       # chord_tip
+    76,          # pitch_root
+    9.5,         # pitch_tip
+    1            # airfoil_index
+]
+
+
+################## FINAL SIMULATION ####################
+# Should I include max iterations?
+def full_simulation(x, ini_file="propeller.ini"):
+    """
+    Full aircraft parameter sizing adn propulsion convergence simulation.
+
+    Returns:
+        total_mass, flight_time
+    """
+
+    # Unpack the input vector
+    kv, Np, diameter, chord_root, chord_tip, pitch_root, pitch_tip, airfoil_idx = x
+
+    # Index select airfoil type from the list above
+    airfoil = airfoil_list[airfoil_idx]
+
+    # Fixed
+    radius_hub = 0.01016
+    
+    # Motor/Battery Setup
+    motor = get_motor_from_kv(kv)
+    motor_mass_kg = motor['mass_g'] / 1000
+    V_batt = motor['V_rate']
+
+    battery = create_battery(Np, V_batt)
+    battery_mass, battery_capacity = battery_calcs(battery)
+
+    # Propeller and .ini file generation
+    rpm_guess = 21000  # initial guess
+    prop = generate_propeller(
+        diameter=diameter,
+        radius_hub=radius_hub,
+        chord_root=chord_root,
+        chord_tip=chord_tip,
+        pitch_root=pitch_root,
+        pitch_tip=pitch_tip,
+        rpm=rpm_guess,
+        airfoil=airfoil
+    )
+    write_ini_file(prop, ini_file)
+
+    # Initial RPM guess w/ propellor_calcs2
+    rpm_old, _, _, _ = propellor_calcs2(
+        config_file=ini_file,
+        motor_mass_kg=motor_mass_kg,
+        battery_mass_kg=battery_mass,
+        structure_mass_kg=0.25
+    )
+
+    # Loop until converged
+    tol = 100
+    max_iter = 100
+    error = 1000
+    iter_count = 0
+
+    while error > tol and iter_count < max_iter:
+        iter_count += 1
+
+        # Update Propellor RPM
+        write_rotor_config(ini_file, rpm_old)
+        T, Q, P = run_prop_analysis(ini_file)
+
+        # Motor RPM Update
+        I = Q / motor['kt_NmpA']
+        Vterm = battery_terminal_voltage(I, V_batt)
+        rpm_new = motor['kv_rpm_per_V'] * Vterm
+        motor_mass_kg = motor['mass_g'] / 1000
+
+        # Check convergence
+        error = abs(rpm_new - rpm_old)
+        rpm_old = rpm_new
+
+    # Total Mass (chassis, batteries, motors)
+    #print(motor_mass_kg)
+    #print(battery_mass)
+    #print(T)
+    structure_mass = matt_structures(motor_mass_kg, battery_mass, T)
+    total_mass_kg = structure_mass + 4*motor_mass_kg + battery_mass
+
+    # Flight time in minutes calc
+    energy_Wh = battery_capacity * V_batt
+    flight_time_hr = energy_Wh / (P / 1000) if P > 0 else 0
+    flight_time_min = flight_time_hr * 60
+
+    return total_mass_kg, flight_time_min
+
+print(full_simulation(x, ini_file="propeller.ini"))

@@ -107,8 +107,38 @@ def build_xfoild_cl_cd_dataframe(reynolds_number=50000, alpha_start=-180, alpha_
     })
     return df[['Alpha', 'Cl', 'Cd']]
 
-# Program starts here
-xfoild_cl_cd_df = build_xfoild_cl_cd_dataframe(reynolds_number=50000, alpha_start=-15, alpha_end=30)
+# Program starts here (CSV FILE)
+# This is Where we change, Re & Alpha start/end below
+xfoild_cl_cd_df = build_xfoild_cl_cd_dataframe(reynolds_number=50000, alpha_start=-5, alpha_end=10)
 print(xfoild_cl_cd_df)
 xfoild_cl_cd_df.to_csv('xfoild_cl_cd_Re50000.csv', index=False)
 
+# DAT FILE PROGRAM
+def write_aerodyn_dat(df, filename, reynolds_number=50000):
+    with open(filename, "w") as f:
+
+        # Header (same structure as E63.dat)
+        f.write("Airfoil data for AeroDyn v13\n")
+        f.write(f"Generated from XFOIL (Re={reynolds_number})\n")
+        f.write("1\n")
+        f.write("0\n")
+        f.write("13.5\n")
+        f.write("0\n")
+        f.write("0\n")
+        f.write("0\n")
+        f.write("-2.98\n")
+        f.write("8.97761\n")
+        f.write("1.0039\n")
+        f.write("-0.3607\n")
+        f.write("-6.0\n")
+        f.write("0.0138\n")
+
+        # Data table
+        for _, row in df.iterrows():
+            alpha = row["Alpha"]
+            cl = row["Cl"]
+            cd = row["Cd"]
+
+            f.write(f"{alpha:10.2f}{cl:12.4f}{cd:12.4f}\n")
+
+write_aerodyn_dat(xfoild_cl_cd_df, "xfoild_cl_cd_Re5000.dat", 50000)
