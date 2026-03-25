@@ -189,7 +189,7 @@ def write_ini_file(prop, filename):
     #airfoil="NACA_4412"
 #)
 
-write_ini_file(prop, "propeller.ini")
+#write_ini_file(prop, "propeller.ini")
 
 
 
@@ -420,13 +420,13 @@ def propellor_calcs2(
     motor_mass_kg=0.0,
     battery_mass_kg=0.0,
     structure_mass_kg=0.25,
-    FOS=1.5,
+    TW_FOS=1.5,
     rpm_min=1000,
     rpm_max=50000,
-    tol=1e-2
+    tol=100
 ):
     """
-    Computes minimum RPM required for hover (with FOS),
+    Computes minimum RPM required for hover (with Thrust/Weight FOS),
     then runs BEMT at that RPM.
 
     Returns:
@@ -436,10 +436,11 @@ def propellor_calcs2(
     # Mass
     total_mass_kg = structure_mass_kg + 4 * motor_mass_kg + battery_mass_kg
 
-    g = 9.81
+    # Acceleration
+    g = 9.81 #m/s^2
 
     # Required Thrust per motor
-    T_required_total = FOS * total_mass_kg * g
+    T_required_total = TW_FOS * total_mass_kg * g
     T_target = T_required_total / 4
 
     # RPM Bisection
