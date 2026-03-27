@@ -71,11 +71,12 @@ def xfoild_cl_cd(angle_of_attack, reynolds_number):
     '''Uses the xfoil library to compute the lift and drag coefficients 
     for an incremental element of an airfoil.
     
-    Assumes viscous flow (in constrast to broader BEMT theory) which is
-    standard practice.
+    Assumes viscous flow (in constrast to broader BEMT theory which neglects 
+    viscosity). This is standard practice.
     
     An error will be displayed if xfoil is used past its "effective" range
     (xfoil is not accurate after stall).'''
+    # Is any error/warning actually being raised if used past effective range?
 
     polar = xfoil.run_polar(almin=angle_of_attack, almax=angle_of_attack, alint=1.0, Re=reynolds_number)
     c_l = float(polar.cl[0])
@@ -120,7 +121,9 @@ def write_aerodyn_dat(df, filename, reynolds_number=50000):
         # Header (same structure as E63.dat)
         f.write("Airfoil data for AeroDyn v13\n")
         f.write(f"Generated from XFOIL (Re={reynolds_number})\n")
-        f.write("1\n")
+        # It does not matter if these first header rows are legit
+        # pybemt skips them anyway (refer to airfoil.py in pybemt library)
+        f.write("1\n") # These values are nonsense but do not matter.
         f.write("0\n")
         f.write("13.5\n")
         f.write("0\n")
