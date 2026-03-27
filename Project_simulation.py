@@ -1,5 +1,6 @@
 import numpy as np
 from pybemt.solver import Solver
+from scipy.optimize import brentq
 
 # Generate Propeller, which will be used to create .ini file 
 def generate_propeller(
@@ -214,9 +215,9 @@ def write_ini_file(prop, filename):
 def get_motor_from_kv(kv):
 
     motor_db = {
-        2300: {'mass_g': 9.1, 'V_rate': 24.0, 'R_ohm': 0.614},
-        3600: {'mass_g': 9.1, 'V_rate': 16.0, 'R_ohm': 0.35},
-        3800: {'mass_g': 9.4, 'V_rate': 12.0, 'R_ohm': 0.105}
+        2300: {'mass_g': 9.1, 'V_rate': 24.0, 'R_winding_ohm': 0.614, 'I_max': 9.3},
+        3600: {'mass_g': 9.1, 'V_rate': 16.0, 'R_winding_ohm': 0.35, 'I_max': 12.1},
+        3800: {'mass_g': 9.4, 'V_rate': 12.0, 'R_winding_ohm': 0.105, 'I_max': 8.1}
     }
 
     if kv not in motor_db:
@@ -227,14 +228,16 @@ def get_motor_from_kv(kv):
     return {
         'kv_rpm_per_V': kv,
         'kt_NmpA': 60/(2*np.pi*kv),
-        'R_ohm': data['R_ohm'],
+        'R_winding_ohm': data['R_winding_ohm'],
+        'I_max': data['I_max'],
         'V_rate': data['V_rate'],
         'mass_g': data['mass_g']
     }
 
 def battery_terminal_voltage(I, V_rate):
-    # Assumed constants
+    # Voc battery assumed to be the motor voltage rate
     Voc = V_rate
+    # Assumed constant
     Rbatt = 0.05
     return Voc - I * Rbatt
 
@@ -243,25 +246,39 @@ def motor_model(kv, Q):
     motor = get_motor_from_kv(kv)
 
     kt = motor['kt_NmpA']
-    kv_val = motor['kv_rpm_per_V']
-    Rm = motor['R_ohm']
+    kv = motor['kv_rpm_per_V']
+    R_winding = motor['R_winding_ohm']
     V_rate = motor['V_rate']
+    I_max = motor['I_max']
 
     # Current from torque (used internally)
     I = Q / kt
 
+    # Current limit check
+    if I > I_max:
+        raise ValueError(f"Overcurrent: I={I:.2f}A exceeds motor limit I_max={I_max:.2f}A")
+    
     # Battery terminal voltage
     Vterm = battery_terminal_voltage(I, V_rate)
 
     # Voltage constraint check
-    if Vterm > V_rate:
-        raise ValueError(
-            f"Motor overvolted: Vterm={Vterm:.2f}V exceeds V_rate={V_rate}V"
-        )
+    V_motor = Vterm - I * R_winding
+
+    if V_motor <= 0:
+        raise ValueError(f"Voltage collapse: V_motor={V_motor:.2f}V (I too large, torque too high)")
 
     # Electrical RPM
-    RPM = kv_val * (Vterm - I * Rm)
+    # Back EMF Equation Used:
+    # Assuming Voc = Vrate
+    # RPM = Kv (V_rate - (Q/Kt)Rbattery - (Q/Kt)Rwinding)
+    RPM = kv * (Vterm - I * R_winding)
 
+    # RPM CHECKS!
+    if RPM <= 0:
+        raise ValueError(f"Invalid RPM computed: {RPM:.2f}")
+    if np.isnan(RPM) or np.isinf(RPM):
+        raise ValueError("RPM became NaN or Inf")
+    
     # Angular velocity
     omega = RPM * 2 * np.pi / 60
 
@@ -270,7 +287,7 @@ def motor_model(kv, Q):
 
     return {
         'RPM': RPM,
-        'P_W': P,
+        'P_motor': P,
         'mass_g': motor['mass_g'],
         'V_rate': V_rate
     }
@@ -352,8 +369,8 @@ def battery_calcs(battery):
 # STRUCTURES #
 
 def matt_structures(motor_mass, battery_mass, propeller_thrust):
-    mass = 1
-    return mass
+    chassis_mass = 1
+    return chassis_mass
 
 
 
@@ -378,7 +395,7 @@ def run_prop_analysis(config_file):
     # Run the solver
     # Returns:
     # T = thrust (N)
-    # Q = torque (N·m)
+    # Q = torque (Nm)
     # P = power (W)
     # sections = blade element breakdown (not used here)
     T, Q, P, sections = solver.run()
@@ -406,28 +423,107 @@ def propellor_calcs(config_file="propeller.ini"):
     if rpm is None:
         raise ValueError("RPM not found in config file.")
 
-    # Run solver (geometry + rpm already defined in .ini)
+    # Run solver (geometry and rpm guess already defined in .ini)
     # T = thrust (Newtons)
-    # Q = torque (N·m)
+    # Q = torque (Nm)
     # P = power (Watts)
     T, Q, P = run_prop_analysis(config_file)
 
     return T, Q, P, rpm
 #########################################################################################
+
+def propellor_calcs2(
+    config_file="propeller.ini",
+    motor_mass_kg=0.0,
+    battery_mass_kg=0.0,
+    structure_mass_kg=0.25,
+    TW_Constraint=1.5,
+    rpm_min=1000,
+    rpm_max=60000,
+    tol=50
+):
+    """
+    Computes RPM required to satisfy thrust-to-weight constraint,
+    then runs BEMT at that RPM.
+
+    Returns:
+        rpm_solution, T, Q, P
+    """
+
+    g = 9.81
+
+    # Total mass
+    total_mass_kg = structure_mass_kg + 4 * motor_mass_kg + battery_mass_kg
+
+    # Required total thrust
+    T_required_total = TW_Constraint * total_mass_kg * g
+
+    # Per motor (quadrotor)
+    T_target = T_required_total / 4
+
+    # Thrust-Based Residual Function
+    def thrust_residual(rpm):
+        # Prevent invalid RPM
+        if rpm <= 0:
+            return -1e6
+
+        write_rotor_config(config_file, rpm)
+
+        try:
+            T, Q, P = run_prop_analysis(config_file)
+        except Exception:
+            return -1e6
+
+        # Root = when thrust matches requirement
+        return T - T_target
+
+    # Check Bounds prior to solving
+    f_low = thrust_residual(rpm_min)
+    f_high = thrust_residual(rpm_max)
+
+    if f_low > 0:
+        raise ValueError(
+            "Even at minimum RPM, thrust exceeds required → overspecced prop or design too powerful"
+        )
+
+    if f_high < 0:
+        raise ValueError(
+            "Even at maximum RPM, cannot reach required thrust → infeasible design"
+        )
+
+    # RPM Solver
+    rpm_solution = brentq(
+        thrust_residual,
+        rpm_min,
+        rpm_max,
+        xtol=tol
+    )
+
+    # Final eval at soln.
+    write_rotor_config(config_file, rpm_solution)
+    T, Q, P = run_prop_analysis(config_file)
+
+    # Sanity check lol
+    if abs(T - T_target) > 0.05 * T_target:
+        print("Warning: thrust not tightly converged")
+
+    return rpm_solution, T, Q, P
+
+'''
 # New Function
 def propellor_calcs2(
     config_file="propeller.ini",
     motor_mass_kg=0.0,
     battery_mass_kg=0.0,
     structure_mass_kg=0.25,
-    TW_FOS=1.5,
+    TW_Constraint=1.5,
     rpm_min=1000,
-    rpm_max=50000,
-    tol=100
-):
+    rpm_max=60000,
+    tol=100):
+
     """
     Computes minimum RPM required for hover (with Thrust/Weight FOS),
-    then runs BEMT at that RPM.
+    then runs BEMT at that RPM. Usese the brentq scipy optimizer to find this feasible RPM.
 
     Returns:
         rpm, T, Q, P
@@ -440,47 +536,66 @@ def propellor_calcs2(
     g = 9.81 #m/s^2
 
     # Required Thrust per motor
-    T_required_total = TW_FOS * total_mass_kg * g
+    T_required_total = TW_Constraint * total_mass_kg * g
+    # Fourth Drone
     T_target = T_required_total / 4
 
+    # Residual Function
+    def thrust_residual(rpm):
+        write_rotor_config(config_file, rpm)
+        T, Q, P = run_prop_analysis(config_file)
+        return T - T_target
+    
+    f_low = thrust_residual(rpm_min)
+    f_high = thrust_residual(rpm_max)
+
+    if f_low > 0:
+        raise ValueError("Even at low RPM, thrust exceeds target → bad design")
+
+    if f_high < 0:
+        raise ValueError("Even at max RPM, cannot reach required thrust → infeasible design")
+
+    # Solve for RPM
+    rpm_solution = brentq(thrust_residual, rpm_min, rpm_max, xtol=10)
+
     # RPM Bisection
-    rpm_low = rpm_min
-    rpm_high = rpm_max
+    #rpm_low = rpm_min
+    #rpm_high = rpm_max
 
-    rpm_solution = None
-    T_solution = None
+    #rpm_solution = None
+    #T_solution = None
 
-    for _ in range(50):
+    #for _ in range(50):
 
-        rpm_mid = 0.5 * (rpm_low + rpm_high)
+        #rpm_mid = 0.5 * (rpm_low + rpm_high)
 
         # Update config file
-        write_rotor_config(config_file, rpm_mid)
+        #write_rotor_config(config_file, rpm_mid)
 
         # Run BEMT
-        T, Q, P = run_prop_analysis(config_file)
+        #T, Q, P = run_prop_analysis(config_file)
 
         # Bisection update
-        if T < T_target:
-            rpm_low = rpm_mid
-        else:
-            rpm_high = rpm_mid
+        #if T < T_target:
+            #rpm_low = rpm_mid
+        #else:
+            #rpm_high = rpm_mid
 
         # Convergence check
-        if abs(T - T_target) < tol:
-            rpm_solution = rpm_mid
-            T_solution = T
-            break
+        #if abs(T - T_target) < tol:
+            #rpm_solution = rpm_mid
+            #T_solution = T
+            #break
 
-        rpm_solution = rpm_mid
-        T_solution = T
+        #rpm_solution = rpm_mid
+        #T_solution = T
 
     # Final eval at converged RPM
     write_rotor_config(config_file, rpm_solution)
     T, Q, P = run_prop_analysis(config_file)
 
     return rpm_solution, T, Q, P
-
+'''
 
 
 ############ INPUT #############
@@ -547,7 +662,7 @@ def full_simulation(x, ini_file="propeller.ini"):
     battery_mass, battery_capacity = battery_calcs(battery)
 
     # Propeller and .ini file generation
-    rpm_guess = 21000  # initial guess
+    rpm_guess = 10000  # initial guess will be overwriten by brentq solver now
     prop = generate_propeller(
         diameter=diameter,
         radius_hub=radius_hub,
@@ -560,49 +675,130 @@ def full_simulation(x, ini_file="propeller.ini"):
     )
     write_ini_file(prop, ini_file)
 
-    # Initial RPM guess w/ propellor_calcs2
-    rpm_old, _, _, _ = propellor_calcs2(
-        config_file=ini_file,
-        motor_mass_kg=motor_mass_kg,
-        battery_mass_kg=battery_mass,
-        structure_mass_kg=0.25
-    )
+    # NEED TO ACCOUNT FOR THRUST REQUIREMENT!
+    def rpm_residual(rpm):
 
-    # Loop until converged
-    tol = 100
-    max_iter = 100
-    error = 1000
-    iter_count = 0
+        if rpm <= 0:
+            return -1e6  # Try and keep solver away from invalid regions
 
-    while error > tol and iter_count < max_iter:
-        iter_count += 1
+        write_rotor_config(ini_file, rpm)
+
+        try:
+            T, Q, P = run_prop_analysis(ini_file)
+            motor_out = motor_model(kv, Q)
+            rpm_motor = motor_out['RPM']
+        except:
+            return -1e6  # If there are invalid physics: reject
+
+        return rpm_motor - rpm
+
+    
+    # NEW (haven't implemented it yet)(Just going to give you the working one for now) RPM Residual Accounting for cosntraitn and RPM convergence 
+    #def rpm_residual(rpm):
+
+        #if rpm <= 0:
+            #return -1e6
+
+        #write_rotor_config(ini_file, rpm)
+
+        #try:
+            #T, Q, P = run_prop_analysis(ini_file)
+            #motor_out = motor_model(kv, Q)
+            #rpm_motor = motor_out['RPM']
+        #except:
+            #return -1e6
+
+        # Implement thrust cosntraint check
+        #if T < T_target:
+            #return -1e6  # Reject RPM that cannot meet thrust
+
+        # Motor Consistency to run
+        #return rpm_motor - rpm
+
+    # Solve for consistent RPM
+    rpm_solution = brentq(rpm_residual, 1000, 60000, xtol=50)
+
+    # Final evaluation at RPM solution found
+    write_rotor_config(ini_file, rpm_solution)
+    T, Q, P = run_prop_analysis(ini_file)
+
+    # Initial RPM guess w/ propellor_calcs2 (used in the converged loop below that is now subbed by brentq)
+    #rpm_old, _, _, _ = propellor_calcs2(
+        #config_file=ini_file,
+        #motor_mass_kg=motor_mass_kg,
+        #battery_mass_kg=battery_mass,
+        #structure_mass_kg=0.25
+    #)
+
+    # Loop until converged (using brentq now)
+    #tol = 100
+    #max_iter = 100
+    #error = 1000
+    #iter_count = 0
+
+    #while error > tol and iter_count < max_iter:
+        #iter_count += 1
+
+        #if rpm_old <= 0 or np.isnan(rpm_old) or np.isinf(rpm_old):
+            #raise ValueError(f"Invalid RPM passed to BEMT: {rpm_old}")
+
+        #write_rotor_config(ini_file, rpm_old)
+        #T, Q, P = run_prop_analysis(ini_file)
+
+        #motor_out = motor_model(kv, Q)
+        #rpm_new = motor_out['RPM']
+
+        # Using some relaxation to hopefully prevent the divergence that's occuring
+        #alpha = 0.3
+        #rpm_new = alpha * rpm_new + (1 - alpha) * rpm_old
+
+        #error = abs(rpm_new - rpm_old)
+        #rpm_old = rpm_new
+
+
+# This was the origigal conbergence/motor loop, which was replaced by the loop above using the relaxation
+    #while error > tol and iter_count < max_iter:
+        #iter_count += 1
 
         # Update Propellor RPM
-        write_rotor_config(ini_file, rpm_old)
-        T, Q, P = run_prop_analysis(ini_file)
+        #write_rotor_config(ini_file, rpm_old)
+        #T, Q, P = run_prop_analysis(ini_file)
 
         # Motor RPM Update
-        I = Q / motor['kt_NmpA']
-        Vterm = battery_terminal_voltage(I, V_batt)
-        rpm_new = motor['kv_rpm_per_V'] * Vterm
-        motor_mass_kg = motor['mass_g'] / 1000
+        #I = Q / motor['kt_NmpA']
+        #Vterm = battery_terminal_voltage(I, V_batt)
+        #rpm_new = motor['kv_rpm_per_V'] * Vterm
+        #motor_mass_kg = motor['mass_g'] / 1000
 
         # Check convergence
-        error = abs(rpm_new - rpm_old)
-        rpm_old = rpm_new
+        #error = abs(rpm_new - rpm_old)
+        #rpm_old = rpm_new
 
-    # Total Mass (chassis, batteries, motors)
+    # Total Mass (chassis, batteries, motors) (kg)
     #print(motor_mass_kg)
     #print(battery_mass)
     #print(T)
     structure_mass = matt_structures(motor_mass_kg, battery_mass, T)
     total_mass_kg = structure_mass + 4*motor_mass_kg + battery_mass
 
-    # Flight time in minutes calc
+    # Flight Time (minutes)
+    print("Power per motor:", P)
+    print("Vbatt:", V_batt)
+    print("Battery Capacity:", battery_capacity)
     energy_Wh = battery_capacity * V_batt
-    flight_time_hr = energy_Wh / (P / 1000) if P > 0 else 0
-    flight_time_min = flight_time_hr * 60
+    print("Energy Wh:", energy_Wh)
+    total_power = 4 * P
+    flight_time_hr = energy_Wh / total_power if total_power > 0 else 0
+    #flight_time_hr = energy_Wh / (P / 1000) if P > 0 else 0
+    print("Flight Time hrs:", flight_time_hr)
+    #flight_time_min = flight_time_hr * 60
 
-    return total_mass_kg, flight_time_min
+    return total_mass_kg, flight_time_hr
 
 print(full_simulation(x, ini_file="propeller.ini"))
+
+# Checking rpm thrust values for analysis
+#for rpm in [5000, 10000, 20000, 30000, 40000]:
+    #write_rotor_config("propeller.ini", rpm)
+    #T, Q, P = run_prop_analysis("propeller.ini")
+    #print(f"RPM: {rpm}, Thrust: {T}")
