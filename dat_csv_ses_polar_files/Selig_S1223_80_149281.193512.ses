@@ -1,0 +1,24 @@
+load .\Selig_S1223.dat
+ppar
+n 30
+
+
+oper
+iter 1000
+visc 149281.193512
+VPAR
+XTR
+1
+1
+
+pacc
+.\Selig_S1223_80_149281.193512.pol
+
+aseq
+1
+20
+1
+pacc
+visc
+
+quit

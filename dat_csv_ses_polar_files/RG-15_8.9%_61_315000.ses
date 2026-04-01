@@ -1,0 +1,23 @@
+load .\RG-15_8.9%.dat
+ppar
+n 30
+
+
+oper
+visc 315000
+VPAR
+XTR
+1
+1
+
+pacc
+.\RG-15_8.9%_61_315000.pol
+
+aseq
+5
+50
+1
+pacc
+visc
+
+quit

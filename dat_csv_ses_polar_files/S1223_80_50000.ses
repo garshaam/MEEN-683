@@ -1,0 +1,23 @@
+load .\S1223.dat
+ppar
+n 30
+
+
+oper
+visc 50000
+VPAR
+XTR
+1
+1
+
+pacc
+.\S1223_80_50000.pol
+
+aseq
+5
+50
+1
+pacc
+visc
+
+quit

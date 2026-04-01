@@ -13,8 +13,21 @@ set_workdir('.\\')
 set_xfoilexe('.\\XFOIL6.99\\xfoil.exe')
 
 # Create an instance of xfoil
-xfoil = Xfoil('NACA 2412')
-xfoil.points_from_dat('NACA\\NACA2412.dat')
+rho = 1.225
+RPM = 20000
+Radius_Re = 0.75*3.5*0.0254/2
+V = RPM / 60 * math.pi * 2*math.pi * Radius_Re
+mu = 1.8e-5
+chord = 10/1000
+Re_n = rho * V * chord / mu
+print(Re_n)
+
+alpha_0 = -10
+alpha_f = 20
+xfoil = Xfoil('SD7037')
+xfoil.points_from_dat('NACA\\SD7037.dat')
+xfoil.max_iter = 200
+
 xfoil.set_ppar(30) # I do not think the number of panels has to equal the
 # number of points used within the .dat file
 
@@ -110,12 +123,12 @@ def build_xfoild_cl_cd_dataframe(reynolds_number=50000, alpha_start=-180, alpha_
 
 # Program starts here (CSV FILE)
 # This is Where we change, Re & Alpha start/end below
-xfoild_cl_cd_df = build_xfoild_cl_cd_dataframe(reynolds_number=50000, alpha_start=-5, alpha_end=10)
+xfoild_cl_cd_df = build_xfoild_cl_cd_dataframe(reynolds_number=Re_n, alpha_start=alpha_0, alpha_end=alpha_f)
 print(xfoild_cl_cd_df)
-xfoild_cl_cd_df.to_csv('xfoild_cl_cd_Re50000.csv', index=False)
+xfoild_cl_cd_df.to_csv('SD7037_cl_cd_NOTIT.csv', index=False)
 
 # DAT FILE PROGRAM
-def write_aerodyn_dat(df, filename, reynolds_number=50000):
+def write_aerodyn_dat(df, filename, reynolds_number):
     with open(filename, "w") as f:
 
         # Header (same structure as E63.dat)
@@ -144,4 +157,5 @@ def write_aerodyn_dat(df, filename, reynolds_number=50000):
 
             f.write(f"{alpha:10.2f}{cl:12.4f}{cd:12.4f}\n")
 
-write_aerodyn_dat(xfoild_cl_cd_df, "xfoild_cl_cd_Re5000.dat", 50000)
+write_aerodyn_dat(xfoild_cl_cd_df, "SD7037_cl_cd_Re150k.dat", Re_n)
+

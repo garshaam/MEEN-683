@@ -300,7 +300,16 @@ airfoil_list = [
     "xfoild_cl_cd_Re5000",
     "NACA_4412",
     "NACA_2412",
-    "NACA_0012"
+    "NACA_0012",
+    "E63",
+    "Selig_S1223",
+    "SD7037",
+    "HN1033",
+    "MH30_7_DOE",
+    "NACA2412_DOE",
+    "RG-15_8_DOE",
+    "SD7037_DOE",
+    "SD7062_DOE"
 ]
 
 x = [
@@ -321,14 +330,11 @@ x = [
     prop_diameter,
     chord_root,
     chord_tip,
-    n_blades,
     pitch_root,
     pitch_tip,
     airfoil_index   # integer to index into airfoil_list
 ]
 '''
-
-
 ################## FINAL SIMULATION ####################
 # Should I include max iterations?
 def full_simulation(x, ini_file="propeller.ini"):
@@ -415,12 +421,15 @@ def full_simulation(x, ini_file="propeller.ini"):
     print("Flight Time hrs:", flight_time_hr)
     print("Thrust per motor N:", T)
     print("Total mass kg:", total_mass_kg)
-    print("Thrust to weight ratio:", calc_thrust_to_weight(T, total_mass_kg))
+
+    thrust_to_weight = calc_thrust_to_weight(4*T, total_mass_kg)
+    print("Thrust to weight ratio:", thrust_to_weight)
     #flight_time_min = flight_time_hr * 60
 
-    return total_mass_kg, flight_time_hr
+    return total_mass_kg, flight_time_hr, thrust_to_weight
 
-print(full_simulation(x, ini_file="propeller.ini"))
+if __name__ == "__main__":
+    print(full_simulation(x, ini_file="propeller.ini"))
 
 # Checking rpm thrust values for analysis
 #for rpm in [5000, 10000, 20000, 30000, 40000]:

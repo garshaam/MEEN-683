@@ -1,0 +1,24 @@
+load .\MH_30__7.84%.dat
+ppar
+n 30
+
+
+oper
+iter 1000
+visc 149281.193512
+VPAR
+XTR
+1
+1
+
+pacc
+.\MH_30__7.84%_66_149281.193512.pol
+
+aseq
+-10
+15
+1
+pacc
+visc
+
+quit

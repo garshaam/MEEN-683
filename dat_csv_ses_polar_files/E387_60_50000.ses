@@ -1,0 +1,23 @@
+load .\E387.dat
+ppar
+n 30
+
+
+oper
+visc 50000
+VPAR
+XTR
+1
+1
+
+pacc
+.\E387_60_50000.pol
+
+aseq
+-20
+30
+1
+pacc
+visc
+
+quit

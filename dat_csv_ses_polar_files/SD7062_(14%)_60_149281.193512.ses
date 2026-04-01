@@ -1,0 +1,24 @@
+load .\SD7062_(14%).dat
+ppar
+n 30
+
+
+oper
+iter 1000
+visc 149281.193512
+VPAR
+XTR
+1
+1
+
+pacc
+.\SD7062_(14%)_60_149281.193512.pol
+
+aseq
+-5
+20
+1
+pacc
+visc
+
+quit
