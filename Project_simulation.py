@@ -1,7 +1,7 @@
 import numpy as np
 from pybemt.solver import Solver
 from scipy.optimize import brentq
-
+from ansys.mechanical.core import launch_mechanical
 # Generate Propeller, which will be used to create .ini file 
 def generate_propeller(
     diameter,
@@ -253,10 +253,101 @@ def battery_calcs(battery):
     return total_mass_kg, total_capacity_Ah
 
 # STRUCTURES #
+def TopoStudy(PT, MM, BM):
 
-def matt_structures(motor_mass, battery_mass, propeller_thrust):
-    chassis_mass = 1
-    return chassis_mass
+    # PT = Thrust per motor [N]
+    # MM = Motor Mass [kg]
+    # BM = Battery Mass [kg]
+    
+    g = 9.81
+    AUX_Mass = 0.200
+    Hardware_Mass = 0.010
+
+    Central_Force = (AUX_Mass + BM + Hardware_Mass) * g
+    Quarter_Force = PT - (MM * g)
+
+    
+    mechanical = launch_mechanical(batch=False, cleanup_on_exit=False, transport_mode="insecure")
+
+    script = rf"""
+ExtAPI.DataModel.Project.Open(r'C:\\Users\\matt6\\Downloads\\DroneModelV3_files\\dp0\\global\\MECH\\SYS.mechdb')
+def get_force(name):
+    forces = ExtAPI.DataModel.GetObjectsByType(DataModelObjectCategory.Force)
+    for f in forces:
+        if f.Name == name:
+            return f
+    raise Exception("Force not found: " + name)
+
+q1 = get_force("Q1")
+q2 = get_force("Q2")
+q3 = get_force("Q3")
+q4 = get_force("Q4")
+m1 = get_force("M1")
+
+# Set values
+q1.ZComponent.Output.SetDiscreteValue(0, Quantity("{Quarter_Force} [N]"))
+q2.ZComponent.Output.SetDiscreteValue(0, Quantity("{Quarter_Force} [N]"))
+q3.ZComponent.Output.SetDiscreteValue(0, Quantity("{Quarter_Force} [N]"))
+q4.ZComponent.Output.SetDiscreteValue(0, Quantity("{Quarter_Force} [N]"))
+
+m1.ZComponent.Output.SetDiscreteValue(0, Quantity("-{Central_Force} [N]"))
+
+analyses = ExtAPI.DataModel.GetObjectsByType(DataModelObjectCategory.Analysis)
+
+if len(analyses) == 0:
+    raise Exception("No analysis found in model")
+
+analysis = analyses[0]
+
+analysis.ClearGeneratedData()
+analysis.Solve(True)
+
+
+# --- Get Structural Optimization analysis ---
+opt_analyses = ExtAPI.DataModel.GetObjectsByName("Structural Optimization")
+
+if not opt_analyses:
+    raise Exception("Structural Optimization analysis not found")
+
+opt_analysis = opt_analyses[0]
+opt_analysis.Solve(True)
+
+# --- Get its solution ---
+opt_solution = opt_analysis.Solution
+opt_solution.EvaluateAllResults()
+
+# --- Activate Topology Density result ---
+topo_density = None
+
+for res in opt_solution.Children:
+    if "Topology Density" in res.Name:
+        topo_density = res
+        break
+
+if topo_density is None:
+    raise Exception("Topology Density result not found")
+
+# Show it in GUI
+topo_density.Activate()
+
+# --- Extract Final Mass ---
+try:
+    final_mass = topo_density.FinalMass
+except:
+    try:
+        final_mass = topo_density.InternalObject.FinalMass
+    except:
+        raise Exception("Could not extract Final Mass")
+
+# Return to Python
+final_mass
+
+
+"""
+
+    mass = mechanical.run_python_script(script)
+    print("Final Mass:", mass)
+    return mass
 
 # Function to update RPM in .ini file
 def write_rotor_config(filename, rpm):
@@ -338,19 +429,23 @@ x = [
 ################## FINAL SIMULATION ####################
 # Should I include max iterations?
 def full_simulation(x, ini_file="propeller.ini"):
-    """
-    Full aircraft parameter sizing and propulsion convergence simulation.
 
-    Returns:
-        total_mass, flight_time
-    """
+    x = np.array(x, dtype=float)  # ensure consistent type
 
-    # Unpack the input vector
-    kv, Np, diameter, chord_root, chord_tip, pitch_root, pitch_tip, airfoil_idx = x
+    kv = int(round(x[0]))
+    Np = int(round(x[1]))
+    diameter = x[2]
+    chord_root = x[3]
+    chord_tip = x[4]
+    pitch_root = x[5]
+    pitch_tip = x[6]
+    airfoil_idx = int(round(x[7]))
+    print(airfoil_idx)
+    # 🔒 extra safety check
+    if airfoil_idx < 0 or airfoil_idx >= len(airfoil_list):
+        raise ValueError(f"Invalid airfoil index: {airfoil_idx}")
 
-    # Index select airfoil type from the list above
     airfoil = airfoil_list[airfoil_idx]
-
     # Fixed
     radius_hub = 0.01016
     
@@ -406,7 +501,7 @@ def full_simulation(x, ini_file="propeller.ini"):
     write_rotor_config(ini_file, rpm_solution)
     T, Q, P = run_prop_analysis(ini_file)
 
-    structure_mass = matt_structures(motor_mass_kg, battery_mass, T)
+    structure_mass = TopoStudy(motor_mass_kg, battery_mass, T)
     total_mass_kg = structure_mass + 4*motor_mass_kg + battery_mass
 
     # Flight Time (minutes)
