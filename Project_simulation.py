@@ -441,7 +441,7 @@ def full_simulation(x, ini_file="propeller.ini"):
     pitch_tip = x[6]
     airfoil_idx = int(round(x[7]))
     print(airfoil_idx)
-    # 🔒 extra safety check
+    
     if airfoil_idx < 0 or airfoil_idx >= len(airfoil_list):
         raise ValueError(f"Invalid airfoil index: {airfoil_idx}")
 
@@ -501,7 +501,7 @@ def full_simulation(x, ini_file="propeller.ini"):
     write_rotor_config(ini_file, rpm_solution)
     T, Q, P = run_prop_analysis(ini_file)
 
-    structure_mass = TopoStudy(motor_mass_kg, battery_mass, T)
+    structure_mass = 0.25  #TopoStudy(motor_mass_kg, battery_mass, T)
     total_mass_kg = structure_mass + 4*motor_mass_kg + battery_mass
 
     # Flight Time (minutes)
@@ -531,3 +531,98 @@ if __name__ == "__main__":
     #write_rotor_config("propeller.ini", rpm)
     #T, Q, P = run_prop_analysis("propeller.ini")
     #print(f"RPM: {rpm}, Thrust: {T}")
+
+def full_simulationWTOPO(x, ini_file="propeller.ini"):
+
+    x = np.array(x, dtype=float)  # ensure consistent type
+
+    kv = int(round(x[0]))
+    Np = int(round(x[1]))
+    diameter = x[2]
+    chord_root = x[3]
+    chord_tip = x[4]
+    pitch_root = x[5]
+    pitch_tip = x[6]
+    airfoil_idx = int(round(x[7]))
+    print(airfoil_idx)
+    
+    if airfoil_idx < 0 or airfoil_idx >= len(airfoil_list):
+        raise ValueError(f"Invalid airfoil index: {airfoil_idx}")
+
+    airfoil = airfoil_list[airfoil_idx]
+    # Fixed
+    radius_hub = 0.01016
+    
+    # Motor/Battery Setup
+    motor = get_motor_from_kv(kv)
+    motor_mass_kg = motor['mass_g'] / 1000
+    V_batt = motor['V_rate']
+
+    battery = create_battery(Np, V_batt)
+    battery_mass, battery_capacity = battery_calcs(battery)
+
+    # Propeller and .ini file generation
+    rpm_guess = 10000  # initial guess will be overwriten by brentq solver now
+    prop = generate_propeller(
+        diameter=diameter,
+        radius_hub=radius_hub,
+        chord_root=chord_root,
+        chord_tip=chord_tip,
+        pitch_root=pitch_root,
+        pitch_tip=pitch_tip,
+        rpm=rpm_guess, # placeholder
+        airfoil=airfoil
+    )
+    write_ini_file(prop, ini_file)
+
+    # Currently the thrust to weight requirement is handled by raising a warning
+    # For optimization purposes it will probably be more convenient to calculate it outside
+    # of the propellor submodule so that it can be checked easily and we can apply a penalty or fancier stuff.
+    def rpm_residual(rpm):
+
+        if rpm <= 0:
+            return -1e6  # Try and keep solver away from invalid regions
+
+        write_rotor_config(ini_file, rpm)
+
+        try:
+            T, Q, P = run_prop_analysis(ini_file)
+            motor_out = motor_model(kv, Q, battery)
+            rpm_motor = motor_out['RPM']
+        except:
+            #raise ValueError("Invalid physics")
+            return -1e6  # If there are invalid physics: reject
+
+        return rpm_motor - rpm
+
+    # Solve for consistent RPM
+    print(rpm_residual(1000))
+    print(rpm_residual(60000))
+
+    rpm_solution = brentq(rpm_residual, 1000, 60000, xtol=50)
+
+    # Final evaluation at RPM solution found
+    write_rotor_config(ini_file, rpm_solution)
+    T, Q, P = run_prop_analysis(ini_file)
+
+    structure_mass =TopoStudy(motor_mass_kg, battery_mass, T)
+    total_mass_kg = structure_mass + 4*motor_mass_kg + battery_mass
+    aux_mass = 4*motor_mass_kg + battery_mass
+    # Flight Time (minutes)
+    print("Power per motor:", P)
+    print("Vbatt:", V_batt)
+    print("Battery Capacity:", battery_capacity)
+    energy_Wh = battery_capacity * V_batt
+    print("Energy Wh:", energy_Wh)
+    total_power = 4 * P
+    flight_time_hr = energy_Wh / total_power if total_power > 0 else 0
+    #flight_time_hr = energy_Wh / (P / 1000) if P > 0 else 0
+    print("Flight Time hrs:", flight_time_hr)
+    print("Thrust per motor N:", T)
+    print("Total mass kg:", total_mass_kg)
+
+    thrust_to_weight = calc_thrust_to_weight(4*T, total_mass_kg)
+    print("Thrust to weight ratio:", thrust_to_weight)
+    #flight_time_min = flight_time_hr * 60
+
+    return total_mass_kg, aux_mass, flight_time_hr, thrust_to_weight

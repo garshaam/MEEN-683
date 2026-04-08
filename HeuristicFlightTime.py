@@ -112,7 +112,7 @@ class DroneOptimization(Problem):
                 mass, flight_time, TWR = full_simulation(x)
 
                 # Min neg flight
-                f.append(-mass)
+                f.append(-flight_time)
 
                 # Constraint: T/W ≥ 1.5  g ≤ 0
                 g.append(1.5 - TWR)

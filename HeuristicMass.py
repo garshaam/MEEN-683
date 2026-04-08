@@ -9,6 +9,7 @@ from pymoo.operators.sampling.rnd import FloatRandomSampling
 from pymoo.operators.sampling.lhs import LHS
 from pymoo.termination import get_termination
 from Project_simulation import full_simulation  
+from Project_simulation import full_simulationWTOPO
 from pathlib import Path
 
 plt.ion()
@@ -47,8 +48,8 @@ def map_airfoil_to_number(airfoil_name):
 # Filter feasible
 df = df[df["Thrust to Weight"] >= 1.5]
 
-# Sort by flight time
-df = df.sort_values("Flight Time [hr]", ascending=False)
+# Sort by Thrust/Weight
+df = df.sort_values("Thrust to Weight", ascending=False)
 
 # Take top 3
 top3 = df.head(3)
@@ -111,8 +112,8 @@ class DroneOptimization(Problem):
 
                 mass, flight_time, TWR = full_simulation(x)
 
-                # Min neg flight
-                f.append(-mass)
+                # Min -TWR
+                f.append(-TWR)
 
                 # Constraint: T/W ≥ 1.5  g ≤ 0
                 g.append(1.5 - TWR)
@@ -153,17 +154,17 @@ class LivePlotCallback(Callback):
         self.fig, self.ax = plt.subplots()
         self.line, = self.ax.plot([], [], marker='o')
         self.ax.set_xlabel("Generation")
-        self.ax.set_ylabel("Best Flight Time (hr)")
+        self.ax.set_ylabel("Best TWR (kg)")
         self.ax.set_title("GA Convergence")
 
     def notify(self, algorithm):
         gen = algorithm.n_gen
         F = algorithm.pop.get("F")
 
-        best = np.min(F)
-        best_flight_time = -best
+        best = np.min(-F)
+        best_TWR = best
 
-        self.best_history.append(best_flight_time)
+        self.best_history.append(best_TWR)
 
         # Update plot data
         self.line.set_xdata(range(1, len(self.best_history) + 1))
@@ -176,7 +177,7 @@ class LivePlotCallback(Callback):
         self.fig.canvas.draw()
         self.fig.canvas.flush_events()
 
-        print(f"Gen {gen}: Best Flight Time = {best_flight_time:.4f} hr")
+        print(f"Gen {gen}: Best Ratio = {best_TWR:.4f} ")
 
 # =========================
 # RUN GA
@@ -184,13 +185,13 @@ class LivePlotCallback(Callback):
 problem = DroneOptimization()
 
 algorithm = GA(
-    pop_size=8,  #GA PARAM 1
-    n_offsprings=8,   #GA PARAM 2
+    pop_size=4,  #GA PARAM 1
+    n_offsprings=4,   #GA PARAM 2
     sampling=SeedSampling(),
     eliminate_duplicates=True
 )
 
-termination = get_termination("n_gen", 8)  #GA PARAM 3
+termination = get_termination("n_gen", 2)  #GA PARAM 3
 
 callback = LivePlotCallback()
 start_time = time.time()
@@ -202,8 +203,6 @@ res = minimize(
     verbose=True,
     callback=callback
 )
-end_time = time.time()
-runtime = (end_time - start_time)/60 #in min
 # =========================
 # SAVE CONVERGENCE PLOT
 # =========================
@@ -215,15 +214,20 @@ print(f"Plot saved to: {plot_path}")
 # =========================
 # Optima
 # =========================
-best_x = res.X
-best_flight_time = -res.F[0]
+best_x = res.X                  ## ADAM INPUTS
+best_TWRGA = res.F[0]           ## ADAM INPUTS 
+TOPOmass, flight_time, TWR = full_simulationWTOPO(best_x)
+best_TWR = TWR
+
+end_time = time.time()
+runtime = (end_time - start_time)/60 #in min
 
 # =========================
 # For Adam
 # =========================
 columns = [
     "Motor", "Battery", "Diameter", "Root Chord", "Tip Chord",
-    "Root Pitch", "Tip Pitch", "Airfoil", "Flight Time [hr]",
+    "Root Pitch", "Tip Pitch", "Airfoil", "Thrust/Weight",
     "Runtime [min]"
 ]
 
@@ -240,7 +244,7 @@ airfoil_list = [
 
 
 
-result_row = list(best_x_clean) + [best_flight_time, runtime]
+result_row = list(best_x_clean) + [best_TWR, runtime]
 
 
 results_df = pd.DataFrame([result_row], columns=columns)
@@ -254,5 +258,5 @@ print(f"CSV saved to: {csv_path}")
 
 print("\n===== OPTIMIZATION RESULT =====")
 print("Best design:", best_x)
-print("Max flight time (hr):", best_flight_time)
+print("Max Thrust/Weight:", best_TWR)
 print(f"\nTotal runtime: {runtime:.2f} minutes")
