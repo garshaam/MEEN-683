@@ -9,7 +9,9 @@ from pymoo.operators.sampling.rnd import FloatRandomSampling
 from pymoo.operators.sampling.lhs import LHS
 from pymoo.termination import get_termination
 from Project_simulation import full_simulation  
-from Project_simulation import full_simulationWTOPO
+from Project_simulation import get_motor_from_kv
+from Project_simulation import battery_calcs
+from Project_simulation import full_simulationWT
 from pathlib import Path
 
 plt.ion()
@@ -48,12 +50,13 @@ def map_airfoil_to_number(airfoil_name):
 # Filter feasible
 df = df[df["Thrust to Weight"] >= 1.5]
 
-# Sort by Thrust/Weight
-df = df.sort_values("Thrust to Weight", ascending=False)
-
 # Take top 3
-top3 = df.head(3)
-
+#top3 = df.head(3)
+top3 = df.sample(n=3)
+avg_TWR = df["Thrust to Weight"].mean()
+avg_FT = df["Flight Time [hr]"].mean()
+print(avg_TWR)
+print(avg_FT)
 X_seed = top3[[
     "Motor", "Battery", "Diameter", "Root Chord", "Tip Chord",
     "Root Pitch", "Tip Pitch", "Airfoil"
@@ -89,7 +92,8 @@ xl[7], xu[7] = 0, 12        # airfoil index
 # =========================
 class DroneOptimization(Problem):
 
-    def __init__(self):
+    def __init__(self,ld):
+        self.ld = ld
         super().__init__(
             n_var=8,
             n_obj=1,
@@ -99,27 +103,24 @@ class DroneOptimization(Problem):
         )
 
     def _evaluate(self, X, out, *args, **kwargs):
-
+        
         f = []
         g = []
-
+        valid_flag = []
         for x in X:
             try:
-                # Cast discrete variables
-                x[0] = int(round(x[0]))  # kv
-                x[1] = int(round(x[1]))  # Np
-                x[7] = int(round(x[7]))  # airfoil idx
-
                 mass, flight_time, TWR = full_simulation(x)
-
-                # Min -TWR
-                f.append(-TWR)
-
-                # Constraint: T/W ≥ 1.5  g ≤ 0
+                print("TWR:", TWR)
+                Norm_FT = flight_time/avg_FT
+                Norm_TWR = TWR/avg_TWR
+                
+                f.append(-((Norm_FT*self.ld)+(Norm_TWR*(1-self.ld))))
                 g.append(1.5 - TWR)
 
-            except:
-                # Penalize failed sims
+            except Exception as e:
+                print("FAILED x:", x)
+                print("Error:", e)
+
                 f.append(1e6)
                 g.append(1e6)
 
@@ -154,17 +155,34 @@ class LivePlotCallback(Callback):
         self.fig, self.ax = plt.subplots()
         self.line, = self.ax.plot([], [], marker='o')
         self.ax.set_xlabel("Generation")
-        self.ax.set_ylabel("Best TWR (kg)")
+        self.ax.set_ylabel("Best Weighted Objective Sum")
         self.ax.set_title("GA Convergence")
 
     def notify(self, algorithm):
         gen = algorithm.n_gen
         F = algorithm.pop.get("F")
 
-        best = np.min(-F)
-        best_TWR = best
+        best = np.min(F)
 
-        self.best_history.append(best_TWR)
+        # candidate value
+        candidate = -best
+
+        # mask values that fall in valid range
+        valid = F[( -F >= 0 ) & ( -F <= 50 )]
+        print(F)
+        print(valid)
+        if 0 <= candidate <= 50:
+            best_TWRFT = candidate
+            print("OPTION 1")
+        else:
+            if len(valid) > 0:
+                best_TWRFT = np.max(valid)
+                print("OPTION 2")
+            else:
+                best_TWRFT = np.max(F)
+                print("OPTION 3")  # fallback if nothing valid exists
+        
+        self.best_history.append(best_TWRFT)
 
         # Update plot data
         self.line.set_xdata(range(1, len(self.best_history) + 1))
@@ -177,86 +195,96 @@ class LivePlotCallback(Callback):
         self.fig.canvas.draw()
         self.fig.canvas.flush_events()
 
-        print(f"Gen {gen}: Best Ratio = {best_TWR:.4f} ")
+        print(f"Gen {gen}: Best TWRFT = {best_TWRFT:.4f}")
 
-# =========================
-# RUN GA
-# =========================
-problem = DroneOptimization()
 
-algorithm = GA(
-    pop_size=4,  #GA PARAM 1
-    n_offsprings=4,   #GA PARAM 2
-    sampling=SeedSampling(),
-    eliminate_duplicates=True
-)
 
-termination = get_termination("n_gen", 2)  #GA PARAM 3
+def run_ga_for_lambda(ld):
 
-callback = LivePlotCallback()
-start_time = time.time()
-res = minimize(
-    problem,
-    algorithm,
-    termination,
-    seed=1,
-    verbose=True,
-    callback=callback
-)
-# =========================
-# SAVE CONVERGENCE PLOT
-# =========================
-plot_path = downloads_path / "ga_convergence.png"
-callback.fig.savefig(plot_path, dpi=300, bbox_inches='tight')
+    problem = DroneOptimization(ld)
 
-print(f"Plot saved to: {plot_path}")
+    algorithm = GA(
+        pop_size=8,   #GA PARAM 1
+        n_offsprings=8,  #GA PARAM 2
+        sampling=SeedSampling(),
+        eliminate_duplicates=True
+    )
 
-# =========================
-# Optima
-# =========================
-best_x = res.X                  ## ADAM INPUTS
-best_TWRGA = res.F[0]           ## ADAM INPUTS 
-TOPOmass, flight_time, TWR = full_simulationWTOPO(best_x)
-best_TWR = TWR
+    termination = get_termination("n_gen", 5)   #GA PARAM 3
 
-end_time = time.time()
-runtime = (end_time - start_time)/60 #in min
+    callback = LivePlotCallback()
 
-# =========================
-# For Adam
-# =========================
+    res = minimize(
+        problem,
+        algorithm,
+        termination,
+        seed=1,
+        verbose=True,
+        callback=callback
+    )
+    plot_path = downloads_path / f"ga_lambda_{ld:.2f}.png"
+    callback.fig.savefig(plot_path, dpi=300, bbox_inches='tight')
+    print(f"Plot saved to: {plot_path}")
+
+    best_x = res.X
+    best_obj = res.F[0]
+    print("CurrentBESTOBJ",best_obj)
+
+    total_mass_kg, aux_mass, flight_time_hr, thrust_to_weight = full_simulationWT(best_x)
+    if (total_mass_kg-aux_mass)<0.25:
+        new_mass = total_mass_kg
+        best_obj = -(((flight_time_hr/avg_FT)*ld)+((thrust_to_weight/avg_TWR)*(1-ld)))
+        print("W/TOPOBESTOBJ",best_obj)
+    else:
+        best_obj = best_obj
+
+    
+
+    return best_x, best_obj, callback.best_history
+
+
+lambda_values = np.linspace(0.1, 1, 10)    # CHANGE 3rd VALUE FOR HIGHER WS DISCRETIZATION
+
+all_results = []
+
+for ld in lambda_values:
+    print(f"\n===== Running GA for lambda = {ld:.2f} =====")
+
+    start_time = time.time()
+
+    best_x, best_obj, history = run_ga_for_lambda(ld)
+
+    runtime = (time.time() - start_time) / 60
+
+    best_score = -best_obj  # convert back
+
+    result_row = list(best_x) + [ld, best_score, runtime]
+
+    all_results.append(result_row)
+
 columns = [
     "Motor", "Battery", "Diameter", "Root Chord", "Tip Chord",
-    "Root Pitch", "Tip Pitch", "Airfoil", "Thrust/Weight",
-    "Runtime [min]"
+    "Root Pitch", "Tip Pitch", "Airfoil",
+    "Lambda", "WeightedObjSum", "Runtime [min]"
 ]
 
+results_df = pd.DataFrame(all_results, columns=columns)
 
-best_x_clean = best_x.copy()
-best_x_clean[0] = int(round(best_x_clean[0]))  # Motor
-best_x_clean[1] = int(round(best_x_clean[1]))  # Battery
-airfoil_list = [
-    "xfoild_cl_cd_Re5000","NACA_4412","NACA_2412","NACA_0012","E63",
-    "Selig_S1223","SD7037","HN1033","MH30_7_DOE","NACA2412_DOE",
-    "RG-15_8_DOE","SD7037_DOE","SD7062_DOE"
-]
-
-
-
-
-result_row = list(best_x_clean) + [best_TWR, runtime]
-
-
-results_df = pd.DataFrame([result_row], columns=columns)
-
-# Save to CSV
-csv_path = downloads_path / "best_design_result.csv"
+csv_path = downloads_path / "lambda_sweep_results.csv"
 results_df.to_csv(csv_path, index=False)
 
-print(f"CSV saved to: {csv_path}")
+print(f"\nSaved lambda sweep results to: {csv_path}")
 
 
-print("\n===== OPTIMIZATION RESULT =====")
-print("Best design:", best_x)
-print("Max Thrust/Weight:", best_TWR)
-print(f"\nTotal runtime: {runtime:.2f} minutes")
+
+
+
+
+
+
+
+
+
+
+
+

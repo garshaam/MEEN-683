@@ -532,7 +532,7 @@ if __name__ == "__main__":
     #T, Q, P = run_prop_analysis("propeller.ini")
     #print(f"RPM: {rpm}, Thrust: {T}")
 
-def full_simulationWTOPO(x, ini_file="propeller.ini"):
+def full_simulationWT(x, ini_file="propeller.ini"):
 
     x = np.array(x, dtype=float)  # ensure consistent type
 
