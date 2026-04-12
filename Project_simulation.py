@@ -1,7 +1,7 @@
 import numpy as np
 from pybemt.solver import Solver
 from scipy.optimize import brentq
-from ansys.mechanical.core import launch_mechanical
+#from ansys.mechanical.core import launch_mechanical
 # Generate Propeller, which will be used to create .ini file 
 def generate_propeller(
     diameter,
@@ -428,6 +428,33 @@ x = [
 '''
 ################## FINAL SIMULATION ####################
 # Should I include max iterations?
+RPM_MIN = 5000
+RPM_MAX = 60000
+RECENT_RPM_SOLUTION = None
+
+
+def solve_rpm_with_recent_start(rpm_residual, xtol):
+    global RECENT_RPM_SOLUTION
+
+    if RECENT_RPM_SOLUTION is not None:
+        center = float(np.clip(RECENT_RPM_SOLUTION, RPM_MIN, RPM_MAX))
+        # Guess very close to the last solution.
+        # This is very helpful for speeding up SQP (slsqp)
+        lower = max(RPM_MIN, center - 15)
+        upper = min(RPM_MAX, center + 15)
+        try:
+            rpm_solution = brentq(rpm_residual, lower, upper, xtol=xtol)
+            RECENT_RPM_SOLUTION = rpm_solution
+            return rpm_solution
+        except ValueError:
+            pass
+
+    rpm_solution = brentq(rpm_residual, RPM_MIN, RPM_MAX, xtol=xtol)
+
+    RECENT_RPM_SOLUTION = rpm_solution
+    return rpm_solution
+
+
 def full_simulation(x, ini_file="propeller.ini"):
 
     x = np.array(x, dtype=float)  # ensure consistent type
@@ -491,11 +518,7 @@ def full_simulation(x, ini_file="propeller.ini"):
 
         return rpm_motor - rpm
 
-    # Solve for consistent RPM
-    print(rpm_residual(1000))
-    print(rpm_residual(60000))
-
-    rpm_solution = brentq(rpm_residual, 1000, 60000, xtol=50)
+    rpm_solution = solve_rpm_with_recent_start(rpm_residual, xtol=50)
 
     # Final evaluation at RPM solution found
     write_rotor_config(ini_file, rpm_solution)
@@ -596,10 +619,10 @@ def full_simulationWT(x, ini_file="propeller.ini"):
         return rpm_motor - rpm
 
     # Solve for consistent RPM
-    print(rpm_residual(1000))
-    print(rpm_residual(60000))
+    # print(rpm_residual(1000))
+    # print(rpm_residual(60000))
 
-    rpm_solution = brentq(rpm_residual, 1000, 60000, xtol=50)
+    rpm_solution = solve_rpm_with_recent_start(rpm_residual, xtol=50)
 
     # Final evaluation at RPM solution found
     write_rotor_config(ini_file, rpm_solution)
