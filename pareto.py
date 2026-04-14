@@ -168,6 +168,12 @@ def main():
     pareto_df.to_csv(pareto_points_path, index=False)
     print(f"Saved Pareto-surviving points CSV to: {pareto_points_path}")
 
+    nbi_method_name = "NBI (also SQP) method"
+    pareto_nbi_df = pareto_df[pareto_df["Method"] == nbi_method_name].copy()
+    pareto_nbi_points_path = downloads_path / "pareto_points_nbi.csv"
+    pareto_nbi_df.to_csv(pareto_nbi_points_path, index=False)
+    print(f"Saved NBI Pareto-surviving points CSV to: {pareto_nbi_points_path}")
+
     pareto_method_frames = {
         method_name: pareto_df[pareto_df["Method"] == method_name]
         for method_name in csv_sources.keys()
