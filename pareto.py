@@ -157,8 +157,16 @@ def main():
         objective_points = all_points_df[required_columns].to_numpy(dtype=float)
         survivors_mask = pareto_survivor_mask(objective_points)
         pareto_df = all_points_df.loc[survivors_mask].copy()
+        pareto_df = pareto_df.sort_values(
+            by=["Flight Time [hr]", "Thrust to Weight"],
+            ascending=[False, False]
+        ).reset_index(drop=True)
     else:
         pareto_df = pd.DataFrame(columns=required_columns + ["Method"])
+
+    pareto_points_path = downloads_path / "pareto_points.csv"
+    pareto_df.to_csv(pareto_points_path, index=False)
+    print(f"Saved Pareto-surviving points CSV to: {pareto_points_path}")
 
     pareto_method_frames = {
         method_name: pareto_df[pareto_df["Method"] == method_name]

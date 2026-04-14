@@ -50,43 +50,108 @@ def map_airfoil_to_number(airfoil_name):
 # Filter feasible
 df = df[df["Thrust to Weight"] >= 1.5]
 
-# Take top 3
-#top3 = df.head(3)
-top3 = df.sample(n=3)
-avg_TWR = df["Thrust to Weight"].mean()
-avg_FT = df["Flight Time [hr]"].mean()
-print(avg_TWR)
-print(avg_FT)
-X_seed = top3[[
-    "Motor", "Battery", "Diameter", "Root Chord", "Tip Chord",
-    "Root Pitch", "Tip Pitch", "Airfoil"
-]].values
-
-print("Top 3 seed designs:")
-print(X_seed)
-
-for x in X_seed:
-    try:
-        # Convert airfoil string 
-        x[7] = int(map_airfoil_to_number(x[7]))
-    
-    except Exception as e:
-        print("Index failed:", e)
 # =========================
 # DEFINE BOUNDS (LOCAL SEARCH)
 # =========================
-# Create bounds around top 3 points
-lower = np.min(X_seed, axis=0)
-upper = np.max(X_seed, axis=0)
-buffer = 0.1
-xl = lower * (1 - buffer)
-xu = upper * (1 + buffer)
+PARETO_BOUNDS_PATH = downloads_path / "pareto_bounds.csv"
+ANCHOR_POINTS_PATH = downloads_path / "anchor_points.csv"
+DESIGN_VARIABLE_INDEX = {
+    "Motor": 0,
+    "Battery": 1,
+    "Diameter": 2,
+    "Root Chord": 3,
+    "Tip Chord": 4,
+    "Root Pitch": 5,
+    "Tip Pitch": 6,
+    "Airfoil": 7,
+}
 
-# Setting these xl and xu bounds does not do anything
-# since these variables are discrete anyway
-# xl[0], xu[0] = 2300, 3800   # kv range
-# xl[1], xu[1] = 1, 4         # Np
-# xl[7], xu[7] = 0, 12        # airfoil index
+
+def load_bounds_from_pareto_csv(bounds_path):
+    if not bounds_path.exists():
+        raise FileNotFoundError(
+            f"Bounds file not found: {bounds_path}. Run generate_pareto_bounds.py first."
+        )
+
+    bounds_df = pd.read_csv(bounds_path)
+    required_columns = {"Variable", "LowerBound", "UpperBound"}
+    missing_columns = required_columns.difference(bounds_df.columns)
+    if missing_columns:
+        raise ValueError(f"pareto_bounds.csv missing required columns: {sorted(missing_columns)}")
+
+    xl_local = np.full(8, np.nan, dtype=float)
+    xu_local = np.full(8, np.nan, dtype=float)
+    missing_variables = []
+
+    for variable_name, variable_idx in DESIGN_VARIABLE_INDEX.items():
+        match = bounds_df[bounds_df["Variable"] == variable_name]
+        if match.empty:
+            missing_variables.append(variable_name)
+            continue
+
+        lower_bound = float(match.iloc[0]["LowerBound"])
+        upper_bound = float(match.iloc[0]["UpperBound"])
+        if lower_bound > upper_bound:
+            raise ValueError(
+                f"Invalid bounds for {variable_name}: LowerBound ({lower_bound}) > UpperBound ({upper_bound})."
+            )
+
+        xl_local[variable_idx] = lower_bound
+        xu_local[variable_idx] = upper_bound
+
+    if missing_variables:
+        raise ValueError(f"pareto_bounds.csv missing variables: {missing_variables}")
+
+    return xl_local, xu_local
+
+
+xl, xu = load_bounds_from_pareto_csv(PARETO_BOUNDS_PATH)
+print(f"Loaded design bounds from: {PARETO_BOUNDS_PATH}")
+
+
+def load_anchor_points(anchor_path):
+    if not anchor_path.exists():
+        raise FileNotFoundError(
+            f"Anchor file not found: {anchor_path}. Run generate_anchors.py first."
+        )
+
+    anchor_df = pd.read_csv(anchor_path)
+    required_columns = {"FT_min", "FT_max", "TWR_min", "TWR_max"}
+    missing_columns = required_columns.difference(anchor_df.columns)
+    if missing_columns:
+        raise ValueError(f"anchor_points.csv missing required columns: {sorted(missing_columns)}")
+    if anchor_df.empty:
+        raise ValueError("anchor_points.csv is empty.")
+
+    row = anchor_df.iloc[0]
+    ft_min = float(row["FT_min"])
+    ft_max = float(row["FT_max"])
+    twr_min = float(row["TWR_min"])
+    twr_max = float(row["TWR_max"])
+
+    if ft_max <= ft_min:
+        raise ValueError(f"Invalid FT anchor range: FT_min={ft_min}, FT_max={ft_max}")
+    if twr_max <= twr_min:
+        raise ValueError(f"Invalid TWR anchor range: TWR_min={twr_min}, TWR_max={twr_max}")
+
+    return ft_min, ft_max, twr_min, twr_max
+
+
+def normalize_with_fixed_range(value, minimum, maximum):
+    return (float(value) - minimum) / (maximum - minimum)
+
+
+def weighted_objective_from_metrics(ld, flight_time_hr, thrust_to_weight):
+    norm_ft = normalize_with_fixed_range(flight_time_hr, FT_MIN, FT_MAX)
+    norm_twr = normalize_with_fixed_range(thrust_to_weight, TWR_MIN, TWR_MAX)
+    return -((norm_ft * ld) + (norm_twr * (1 - ld)))
+
+
+FT_MIN, FT_MAX, TWR_MIN, TWR_MAX = load_anchor_points(ANCHOR_POINTS_PATH)
+print(
+    f"Loaded anchors from: {ANCHOR_POINTS_PATH} | "
+    f"FT:[{FT_MIN:.6f}, {FT_MAX:.6f}] TWR:[{TWR_MIN:.6f}, {TWR_MAX:.6f}]"
+)
 
 MOTOR_OPTIONS = [2300, 3600, 3800]
 BATTERY_OPTIONS = [1, 2, 3, 4]
@@ -259,11 +324,8 @@ class DroneOptimization(ElementwiseProblem):
             mass, flight_time, TWR = full_simulation(x)
             print("TWR:", TWR)
 
-            norm_ft = flight_time / avg_FT
-            norm_twr = TWR / avg_TWR
-
             evaluation = {
-                "F": -((norm_ft * self.ld) + (norm_twr * (1 - self.ld))),
+                "F": weighted_objective_from_metrics(self.ld, flight_time, TWR),
                 "G": 1.5 - TWR,
                 "FT": flight_time,
                 "TWR": TWR
@@ -410,7 +472,7 @@ def finalize_solution_metrics(ld, best_x, best_obj, metrics, use_topology_at_end
             metrics["flight_time_hr"] = topo_flight_time_hr
             metrics["thrust_to_weight"] = topo_thrust_to_weight
             metrics["used_topology_metrics"] = True
-            best_obj = -(((topo_flight_time_hr / avg_FT) * ld) + ((topo_thrust_to_weight / avg_TWR) * (1 - ld)))
+            best_obj = weighted_objective_from_metrics(ld, topo_flight_time_hr, topo_thrust_to_weight)
             print("TOPO_BESTOBJ", best_obj)
 
     return best_obj, metrics
@@ -425,12 +487,12 @@ def run_ga_for_lambda(ld, use_topology_at_end=False, seed_type=SEED_TYPE_DOE):
     print(f"GA seed type: {seed_type} | seed designs available: {len(seed_designs)}")
 
     algorithm = MixedVariableGA(
-        pop_size=10, # GA PARAM 1
+        pop_size=16, # GA PARAM 1
         n_offsprings=10, # GA PARAM 2
         sampling=SeedSampling(seed_designs),
     )
 
-    termination = get_termination("n_gen", 5)   #GA PARAM 3
+    termination = get_termination("n_gen", 6)   #GA PARAM 3
 
     callback = LivePlotCallback()
 
@@ -927,6 +989,6 @@ def run_normal_boundary_intersection(num_runs, pull_utopia_from_file=True, skip_
 
 # Start of program
 #run_normal_boundary_intersection(10,False,True,False)
-run_weighted_sum(1,1,1,False)
+run_weighted_sum(10,0,1,False,SEED_TYPE_FLIGHT_TIME)
 
 flush_lawnmower_search(force=True)
