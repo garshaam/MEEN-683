@@ -14,6 +14,7 @@ from Project_simulation import battery_calcs
 from Project_simulation import full_simulationWT
 from pathlib import Path
 from scipy.optimize import minimize as scipy_minimize
+import CollectSavedData as saves
 
 plt.ion()
 
@@ -96,8 +97,8 @@ lawnmower_search_columns = [
 ]
 lawnmower_search_buffer = []
 lawnmower_search_path = downloads_path / "lawnmower_search.csv"
+# The lawnmower search is appended to file after "lawnmower_flush_size" number of runs
 lawnmower_flush_size = 5
-
 
 def flush_lawnmower_search(force=False):
     global lawnmower_search_buffer
@@ -198,7 +199,6 @@ class DroneOptimization(Problem):
         out["FT"] = np.array(ft_vals)
         out["TWR"] = np.array(twr_vals)
 
-
 # =========================
 # Sampling
 # =========================
@@ -268,7 +268,6 @@ class LivePlotCallback(Callback):
 
         print(f"Gen {gen}: Best TWRFT = {best_TWRFT:.4f}")
 
-
 def finalize_solution_metrics(ld, best_x, best_obj, metrics, use_topology_at_end):
     if use_topology_at_end:
         total_mass_kg, aux_mass, topo_flight_time_hr, topo_thrust_to_weight = full_simulationWT(best_x)
@@ -283,7 +282,6 @@ def finalize_solution_metrics(ld, best_x, best_obj, metrics, use_topology_at_end
             print("TOPO_BESTOBJ", best_obj)
 
     return best_obj, metrics
-
 
 def run_ga_for_lambda(ld, use_topology_at_end=False):
 
@@ -419,120 +417,136 @@ def run_gradient_method_for_lambda(ld, starting_x=None, use_topology_at_end=Fals
 
     return best_x, best_obj, history, metrics
 
-num_lambdas = 20
-lambda_min = 0.1
-lambda_max = 1
-lambda_values = np.linspace(lambda_min, lambda_max, num_lambdas)    # CHANGE 3rd VALUE FOR HIGHER WS DISCRETIZATION
+def run_weighted_sum(num_lambdas, lambda_min=0.1, lambda_max=1, skip_existing_lambdas=True):
+    lambda_values = np.linspace(lambda_min, lambda_max, num_lambdas)    # CHANGE 3rd VALUE FOR HIGHER WS DISCRETIZATION
 
-all_results = []
-
-columns = [
-    "Motor", "Battery", "Diameter", "Root Chord", "Tip Chord",
-    "Root Pitch", "Tip Pitch", "Airfoil",
-    "Lambda", "WeightedObjSum", "Flight Time [hr]", "Thrust to Weight", "Runtime [min]"
-]
-
-# ga_best_by_lambda = []
-
-# for ld in lambda_values:
-#     print(f"\n===== Running GA for lambda = {ld:.2f} =====")
-#     start_time = time.time()
-#     best_x, best_obj, history, metrics = run_ga_for_lambda(ld, use_topology_at_end=False)
-#     runtime = (time.time() - start_time) / 60
-#     best_score = -best_obj  # convert back
-#     result_row = list(best_x) + [
-#         ld,
-#         best_score,
-#         metrics["flight_time_hr"],
-#         metrics["thrust_to_weight"],
-#         runtime
-#     ]
-
-#     all_results.append(result_row)
-#     ga_best_by_lambda.append(best_x)
-
-# GA_results_df = pd.DataFrame(all_results, columns=columns)
-# GA_csv_path = downloads_path / "prelim_GA_lambda_sweep_results.csv"
-# GA_results_df.to_csv(GA_csv_path, index=False)
-
-# print(f"\nSaved preliminary GA lambda sweep results to: {GA_csv_path}")
-print("Running SQP gradient method now...")
-
-GA_csv_path = downloads_path / "prelim_GA_lambda_sweep_results.csv"
-ga_seed_columns = [
-    "Motor", "Battery", "Diameter", "Root Chord", "Tip Chord",
-    "Root Pitch", "Tip Pitch", "Airfoil"
-]
-
-ga_results_df = pd.read_csv(GA_csv_path).sort_values("Lambda").reset_index(drop=True)
-ga_best_by_lambda = [
-    ga_results_df.loc[i, ga_seed_columns].to_numpy(dtype=float)
-    for i in range(len(ga_results_df))
-]
-
-all_results = []
-lambda_key = lambda value: round(float(value), 10)
-
-# Temporary only because of long runtime duration:
-# recover the best feasible result seen so far for each lambda from the lawnmower search log,
-# seed the output with those rows, and skip rerunning those lambdas.
-completed_lambda_keys = set()
-if lawnmower_search_path.exists():
-    recovered_df = pd.read_csv(lawnmower_search_path)
-    recovered_df = recovered_df[recovered_df["ConstraintG"] <= 0].copy()
-
-    if not recovered_df.empty:
-        recovered_df["LambdaKey"] = recovered_df["Lambda"].apply(lambda_key)
-        recovered_best_idx = recovered_df.groupby("LambdaKey")["WeightedObj"].idxmin()
-        recovered_best_df = recovered_df.loc[recovered_best_idx].sort_values("Lambda")
-
-        for _, row in recovered_best_df.iterrows():
-            row_lambda = float(row["Lambda"])
-            row_key = lambda_key(row_lambda)
-
-            if row_key not in {lambda_key(ld) for ld in lambda_values}:
-                continue
-
-            completed_lambda_keys.add(row_key)
-            all_results.append([
-                float(row["Motor"]),
-                float(row["Battery"]),
-                float(row["Diameter"]),
-                float(row["Root Chord"]),
-                float(row["Tip Chord"]),
-                float(row["Root Pitch"]),
-                float(row["Tip Pitch"]),
-                float(row["Airfoil"]),
-                row_lambda,
-                float(-row["WeightedObj"]),
-                float(row["Flight Time [hr]"]),
-                float(row["Thrust to Weight"]),
-                0.0
-            ])
-
-for ld in lambda_values:
-    if lambda_key(ld) in completed_lambda_keys:
-        print(f"\n===== Skipping lambda = {ld:.2f}; recovered from lawnmower_search.csv =====")
-        continue
-
-    print(f"\n===== Running gradient method for lambda = {ld:.2f} =====")
-    start_time = time.time()
-    best_x, best_obj, history, metrics = run_gradient_method_for_lambda(ld, ga_best_by_lambda[round(ld/lambda_max*num_lambdas-1)], use_topology_at_end=False)
-    runtime = (time.time() - start_time) / 60
-    best_score = -best_obj  # convert back
-    result_row = list(best_x) + [
-        ld,
-        best_score,
-        metrics["flight_time_hr"],
-        metrics["thrust_to_weight"],
-        runtime
+    columns = [
+        "Motor", "Battery", "Diameter", "Root Chord", "Tip Chord",
+        "Root Pitch", "Tip Pitch", "Airfoil",
+        "Lambda", "WeightedObjSum", "Flight Time [hr]", "Thrust to Weight", "Runtime [min]"
     ]
 
-    all_results.append(result_row)
+    GA_csv_path = downloads_path / "prelim_GA_lambda_sweep_results.csv"
+    Gradient_csv_path = downloads_path / "post_gradient_lambda_sweep_results.csv"
 
-Gradient_results_df = pd.DataFrame(all_results, columns=columns).sort_values("Lambda").reset_index(drop=True)
-Gradient_csv_path = downloads_path / "post_gradient_lambda_sweep_results.csv"
-Gradient_results_df.to_csv(Gradient_csv_path, index=False)
+    def lambda_key(value):
+        return round(float(value), 10)
 
-print(f"\nSaved gradient method lambda sweep results to: {Gradient_csv_path}")
+    ga_seed_columns = [
+        "Motor", "Battery", "Diameter", "Root Chord", "Tip Chord",
+        "Root Pitch", "Tip Pitch", "Airfoil"
+    ]
+
+    def merge_results(existing_path, new_results):
+        frames = []
+
+        if existing_path.exists():
+            existing_df = pd.read_csv(existing_path)
+            frames.append(existing_df[columns])
+
+        if new_results:
+            frames.append(pd.DataFrame(new_results, columns=columns))
+
+        if not frames:
+            return pd.DataFrame(columns=columns)
+
+        merged_df = pd.concat(frames, ignore_index=True)
+        merged_df["LambdaKey"] = merged_df["Lambda"].apply(lambda_key)
+        merged_df = merged_df.drop_duplicates(subset="LambdaKey", keep="first")
+        merged_df = merged_df[columns].sort_values("Lambda").reset_index(drop=True)
+
+        return merged_df
+
+    def build_ga_seed_map(results_df):
+        ga_seed_map = {}
+
+        for _, row in results_df.iterrows():
+            ga_seed_map[lambda_key(row["Lambda"])] = row[ga_seed_columns].to_numpy(dtype=float)
+
+        return ga_seed_map
+
+    GA_results = []
+    completed_ga_lambda_keys = set()
+
+    if GA_csv_path.exists():
+        ga_existing_df = pd.read_csv(GA_csv_path).sort_values("Lambda").reset_index(drop=True)
+        completed_ga_lambda_keys = {lambda_key(value) for value in ga_existing_df["Lambda"]}
+
+    for ld in lambda_values:
+        row_key = lambda_key(ld)
+        if skip_existing_lambdas and row_key in completed_ga_lambda_keys:
+            print(f"\n===== Skipping GA for lambda = {ld:.2f}; already present in {GA_csv_path.name} =====")
+            continue
+
+        print(f"\n===== Running GA for lambda = {ld:.2f} =====")
+        start_time = time.time()
+        best_x, best_obj, history, metrics = run_ga_for_lambda(ld, use_topology_at_end=False)
+        runtime = (time.time() - start_time) / 60
+        best_score = -best_obj  # convert back
+        result_row = list(best_x) + [
+            ld,
+            best_score,
+            metrics["flight_time_hr"],
+            metrics["thrust_to_weight"],
+            runtime
+        ]
+
+        GA_results.append(result_row)
+        completed_ga_lambda_keys.add(row_key)
+
+    GA_results_df = merge_results(GA_csv_path, GA_results)
+    GA_results_df.to_csv(GA_csv_path, index=False)
+    ga_best_by_lambda = build_ga_seed_map(GA_results_df)
+
+    print(f"\nSaved preliminary GA lambda sweep results to: {GA_csv_path}")
+    print("Running SQP gradient method now...")
+
+    gradient_results = []
+    completed_gradient_lambda_keys = set()
+
+    if Gradient_csv_path.exists():
+        gradient_existing_df = pd.read_csv(Gradient_csv_path).sort_values("Lambda").reset_index(drop=True)
+        completed_gradient_lambda_keys = {lambda_key(value) for value in gradient_existing_df["Lambda"]}
+
+    missing_ga_seed_keys = [lambda_key(ld) for ld in lambda_values if lambda_key(ld) not in ga_best_by_lambda]
+    if missing_ga_seed_keys:
+        raise ValueError(f"Missing GA seeds for lambdas: {missing_ga_seed_keys}")
+
+    for ld in lambda_values:
+        row_key = lambda_key(ld)
+        if skip_existing_lambdas and row_key in completed_gradient_lambda_keys:
+            print(f"\n===== Skipping gradient method for lambda = {ld:.2f}; already present in {Gradient_csv_path.name} =====")
+            continue
+
+        print(f"\n===== Running gradient method for lambda = {ld:.2f} =====")
+        start_time = time.time()
+        best_x, best_obj, history, metrics = run_gradient_method_for_lambda(
+            ld,
+            ga_best_by_lambda[lambda_key(ld)],
+            use_topology_at_end=False
+        )
+        runtime = (time.time() - start_time) / 60
+        best_score = -best_obj  # convert back
+        result_row = list(best_x) + [
+            ld,
+            best_score,
+            metrics["flight_time_hr"],
+            metrics["thrust_to_weight"],
+            runtime
+        ]
+
+        gradient_results.append(result_row)
+        completed_gradient_lambda_keys.add(row_key)
+
+    Gradient_results_df = merge_results(Gradient_csv_path, gradient_results)
+    Gradient_results_df.to_csv(Gradient_csv_path, index=False)
+
+    print(f"\nSaved gradient method lambda sweep results to: {Gradient_csv_path}")
+
+#def run_normal_boundary_intersection(num_runs, pull_utopia_from_file=True):
+    # Perform single objective optimization for each objective
+# Start of program
+run_weighted_sum(1, 0, 0)
+
+
 flush_lawnmower_search(force=True)

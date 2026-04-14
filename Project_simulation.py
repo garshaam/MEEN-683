@@ -456,6 +456,8 @@ def solve_rpm_with_recent_start(rpm_residual, xtol):
 
 
 def full_simulation(x, ini_file="propeller.ini"):
+    # The order of operations in this function is somewhat weird.
+    # The battery and motor stuff could be rearranged to reduce the number of function calls
 
     x = np.array(x, dtype=float)  # ensure consistent type
 
