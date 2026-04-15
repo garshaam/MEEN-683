@@ -774,42 +774,25 @@ def run_normal_boundary_intersection(num_runs, pull_utopia_from_file=True, skip_
     if not Gradient_csv_path.exists():
         raise FileNotFoundError(
             f"Gradient results file not found: {Gradient_csv_path}. "
-            "Run weighted sum with lambda=0 and lambda=1 first, or call this function with pull_utopia_from_file=False."
+            "Run weighted sum first, or call this function with pull_utopia_from_file=False."
         )
 
     gradient_df = pd.read_csv(Gradient_csv_path).sort_values("Lambda").reset_index(drop=True)
     gradient_df["LambdaKey"] = gradient_df["Lambda"].apply(lambda_key)
 
-    lambda_zero = gradient_df[gradient_df["LambdaKey"] == lambda_key(0.0)]
-    lambda_one = gradient_df[gradient_df["LambdaKey"] == lambda_key(1.0)]
-
-    if lambda_zero.empty or lambda_one.empty:
+    ft_span = FT_MAX - FT_MIN
+    twr_span = TWR_MAX - TWR_MIN
+    if ft_span <= 0 or twr_span <= 0:
         raise ValueError(
-            "NBI needs lambda=0 and lambda=1 rows in post_gradient_lambda_sweep_results.csv "
-            "to define the utopia line endpoints."
+            "Cannot form NBI line because anchor_points.csv has a non-positive objective span."
         )
 
-    twr_anchor_row = lambda_zero.iloc[0]
-    ft_anchor_row = lambda_one.iloc[0]
+    objective_scale = np.array([1.0 / ft_span, 1.0 / twr_span], dtype=float)
+    objective_offset = np.array([FT_MIN, TWR_MIN], dtype=float)
 
-    twr_anchor = np.array([
-        float(twr_anchor_row["Flight Time [hr]"]),
-        float(twr_anchor_row["Thrust to Weight"])
-    ])
-    ft_anchor = np.array([
-        float(ft_anchor_row["Flight Time [hr]"]),
-        float(ft_anchor_row["Thrust to Weight"])
-    ])
-
-    ft_span = abs(ft_anchor[0] - twr_anchor[0])
-    twr_span = abs(ft_anchor[1] - twr_anchor[1])
-
-    if ft_span == 0 or twr_span == 0:
-        raise ValueError("Cannot form an NBI line because one anchor-objective span is zero.")
-
-    objective_scale = np.array([1.0 / ft_span, 1.0 / twr_span])
-    scaled_twr_anchor = twr_anchor * objective_scale
-    scaled_ft_anchor = ft_anchor * objective_scale
+    # In normalized objective space: twr-favored corner and ft-favored corner.
+    scaled_twr_anchor = np.array([0.0, 1.0], dtype=float)
+    scaled_ft_anchor = np.array([1.0, 0.0], dtype=float)
 
     line_direction = scaled_ft_anchor - scaled_twr_anchor
     normal = np.array([line_direction[1], -line_direction[0]], dtype=float)
@@ -821,6 +804,8 @@ def run_normal_boundary_intersection(num_runs, pull_utopia_from_file=True, skip_
         "Motor", "Battery", "Diameter", "Root Chord", "Tip Chord",
         "Root Pitch", "Tip Pitch", "Airfoil"
     ]
+    nbi_multi_start_count = 5
+    lawnmower_candidate_pool_size = 40
 
     def merge_results(existing_path, new_results):
         frames = []
@@ -843,28 +828,42 @@ def run_normal_boundary_intersection(num_runs, pull_utopia_from_file=True, skip_
         return merged_df
 
     def nearest_gradient_seed(beta):
+        if gradient_df.empty:
+            raise ValueError("Gradient results CSV is empty; cannot generate NBI seeds.")
         nearest_idx = (gradient_df["Lambda"] - beta).abs().idxmin()
         return gradient_df.loc[nearest_idx, seed_columns].to_numpy(dtype=float)
 
-    beta_values = np.linspace(0, 1, num_runs)
-    nbi_results = []
-    completed_beta_keys = set()
+    def load_lawnmower_seed_pool():
+        flush_lawnmower_search(force=True)
 
-    if NBI_csv_path.exists():
-        existing_nbi_df = pd.read_csv(NBI_csv_path).sort_values("Beta").reset_index(drop=True)
-        completed_beta_keys = {beta_key(value) for value in existing_nbi_df["Beta"]}
+        if not lawnmower_search_path.exists():
+            return pd.DataFrame(columns=seed_columns + ["Flight Time [hr]", "Thrust to Weight", "FT_norm", "TWR_norm"])
 
-    for beta in beta_values:
-        current_beta_key = beta_key(beta)
-        if skip_existing_points and current_beta_key in completed_beta_keys:
-            print(f"\n===== Skipping NBI beta = {beta:.2f}; already present in {NBI_csv_path.name} =====")
-            continue
+        required_columns = seed_columns + ["Flight Time [hr]", "Thrust to Weight"]
+        lawnmower_df = pd.read_csv(lawnmower_search_path)
 
-        print(f"\n===== Running NBI for beta = {beta:.2f} =====")
-        start_time = time.time()
-        line_point = scaled_twr_anchor + beta * (scaled_ft_anchor - scaled_twr_anchor)
-        starting_x = nearest_gradient_seed(beta)
+        missing_cols = [col for col in required_columns if col not in lawnmower_df.columns]
+        if missing_cols:
+            return pd.DataFrame(columns=seed_columns + ["Flight Time [hr]", "Thrust to Weight", "FT_norm", "TWR_norm"])
 
+        for col in required_columns:
+            lawnmower_df[col] = pd.to_numeric(lawnmower_df[col], errors="coerce")
+
+        lawnmower_df = lawnmower_df.dropna(subset=required_columns)
+        lawnmower_df = lawnmower_df[lawnmower_df["Thrust to Weight"] >= 1.5]
+        if lawnmower_df.empty:
+            return pd.DataFrame(columns=seed_columns + ["Flight Time [hr]", "Thrust to Weight", "FT_norm", "TWR_norm"])
+
+        lawnmower_df["FT_norm"] = (lawnmower_df["Flight Time [hr]"] - objective_offset[0]) * objective_scale[0]
+        lawnmower_df["TWR_norm"] = (lawnmower_df["Thrust to Weight"] - objective_offset[1]) * objective_scale[1]
+        lawnmower_df = lawnmower_df.replace([np.inf, -np.inf], np.nan).dropna(subset=["FT_norm", "TWR_norm"])
+        lawnmower_df = lawnmower_df.drop_duplicates(subset=seed_columns, keep="last").reset_index(drop=True)
+
+        return lawnmower_df
+
+    line_direction_unit = line_direction / np.linalg.norm(line_direction)
+
+    def solve_nbi_from_seed(beta, line_point, starting_x, initial_t):
         problem = DroneOptimization(beta)
 
         fixed_discrete_variables = {
@@ -919,14 +918,14 @@ def run_normal_boundary_intersection(num_runs, pull_utopia_from_file=True, skip_
             x_cont = y[:-1]
             t = float(y[-1])
             evaluation = evaluate_continuous_cached(x_cont)
-            scaled_ft = evaluation["FT"] * objective_scale[0]
+            scaled_ft = (evaluation["FT"] - objective_offset[0]) * objective_scale[0]
             return scaled_ft - (line_point[0] + t * normal[0])
 
         def eq_twr(y):
             x_cont = y[:-1]
             t = float(y[-1])
             evaluation = evaluate_continuous_cached(x_cont)
-            scaled_twr = evaluation["TWR"] * objective_scale[1]
+            scaled_twr = (evaluation["TWR"] - objective_offset[1]) * objective_scale[1]
             return scaled_twr - (line_point[1] + t * normal[1])
 
         bounds = [
@@ -937,7 +936,7 @@ def run_normal_boundary_intersection(num_runs, pull_utopia_from_file=True, skip_
             (float(xl[6]), float(xu[6])),
             (0.0, None),
         ]
-        initial_guess = np.concatenate([starting_x[2:7], [0.0]])
+        initial_guess = np.concatenate([starting_x[2:7], [max(0.0, float(initial_t))]])
 
         res = scipy_minimize(
             objective_nbi,
@@ -949,16 +948,117 @@ def run_normal_boundary_intersection(num_runs, pull_utopia_from_file=True, skip_
                 {"type": "eq", "fun": eq_ft},
                 {"type": "eq", "fun": eq_twr},
             ],
-            options={"maxiter": 3, "disp": True}
+            options={"maxiter": 3, "disp": False}
         )
 
         evaluation = evaluate_continuous_cached(res.x[:-1])
         best_x = evaluation_cache["x_full"].copy()
         nbi_t = float(res.x[-1])
-        best_obj = float(evaluation["F"])
-        metrics = {
+        ineq_value = float(twr_constraint(res.x))
+        eq_error = float(abs(eq_ft(res.x)) + abs(eq_twr(res.x)))
+        constraint_violation = float(max(0.0, -ineq_value) + eq_error)
+        merit = float(nbi_t - 100.0 * constraint_violation)
+
+        return {
+            "best_x": best_x,
+            "nbi_t": nbi_t,
+            "best_obj": float(evaluation["F"]),
             "flight_time_hr": float(evaluation["FT"]),
             "thrust_to_weight": float(evaluation["TWR"]),
+            "constraint_violation": constraint_violation,
+            "merit": merit,
+        }
+
+    beta_values = np.linspace(0, 1, num_runs)
+    nbi_results = []
+    completed_beta_keys = set()
+    continuation_solution = None
+
+    if NBI_csv_path.exists():
+        existing_nbi_df = pd.read_csv(NBI_csv_path).sort_values("Beta").reset_index(drop=True)
+        completed_beta_keys = {beta_key(value) for value in existing_nbi_df["Beta"]}
+
+    for beta in beta_values:
+        current_beta_key = beta_key(beta)
+        if skip_existing_points and current_beta_key in completed_beta_keys:
+            print(f"\n===== Skipping NBI beta = {beta:.2f}; already present in {NBI_csv_path.name} =====")
+            continue
+
+        print(f"\n===== Running NBI for beta = {beta:.2f} =====")
+        start_time = time.time()
+        line_point = scaled_twr_anchor + beta * (scaled_ft_anchor - scaled_twr_anchor)
+
+        seed_candidates = []
+
+        if continuation_solution is not None:
+            continuation_point = np.array([
+                (continuation_solution["flight_time_hr"] - objective_offset[0]) * objective_scale[0],
+                (continuation_solution["thrust_to_weight"] - objective_offset[1]) * objective_scale[1]
+            ], dtype=float)
+            continuation_t0 = float(np.dot(continuation_point - line_point, normal))
+            seed_candidates.append({
+                "x": continuation_solution["x"].copy(),
+                "t0": max(0.0, continuation_t0),
+                "source": "continuation"
+            })
+
+        lawnmower_seed_df = load_lawnmower_seed_pool()
+        if not lawnmower_seed_df.empty:
+            delta_ft = lawnmower_seed_df["FT_norm"].to_numpy(dtype=float) - line_point[0]
+            delta_twr = lawnmower_seed_df["TWR_norm"].to_numpy(dtype=float) - line_point[1]
+            t_projection = delta_ft * normal[0] + delta_twr * normal[1]
+            tangent_residual = np.abs(delta_ft * line_direction_unit[0] + delta_twr * line_direction_unit[1])
+            seed_rank = tangent_residual + 10.0 * np.maximum(0.0, -t_projection)
+
+            ranked_idx = np.argsort(seed_rank)[:lawnmower_candidate_pool_size]
+            for idx in ranked_idx:
+                row = lawnmower_seed_df.iloc[int(idx)]
+                seed_candidates.append({
+                    "x": row[seed_columns].to_numpy(dtype=float),
+                    "t0": max(0.0, float(t_projection[idx])),
+                    "source": "lawnmower"
+                })
+
+        seed_candidates.append({
+            "x": nearest_gradient_seed(beta),
+            "t0": 0.0,
+            "source": "gradient_fallback"
+        })
+
+        deduped_candidates = []
+        seen_keys = set()
+        for candidate in seed_candidates:
+            key = tuple(np.round(candidate["x"], 10))
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            deduped_candidates.append(candidate)
+            if len(deduped_candidates) >= nbi_multi_start_count:
+                break
+
+        print(f"NBI beta={beta:.2f} multi-start candidates: {len(deduped_candidates)}")
+
+        best_run = None
+        for candidate in deduped_candidates:
+            run_result = solve_nbi_from_seed(
+                beta=beta,
+                line_point=line_point,
+                starting_x=candidate["x"],
+                initial_t=candidate["t0"]
+            )
+            if best_run is None or run_result["merit"] > best_run["merit"]:
+                best_run = run_result
+
+        if best_run is None:
+            print(f"Skipping NBI beta={beta:.2f}: no valid multi-start results.")
+            continue
+
+        best_x = best_run["best_x"]
+        nbi_t = best_run["nbi_t"]
+        best_obj = best_run["best_obj"]
+        metrics = {
+            "flight_time_hr": best_run["flight_time_hr"],
+            "thrust_to_weight": best_run["thrust_to_weight"],
             "used_topology_metrics": False
         }
 
@@ -980,6 +1080,11 @@ def run_normal_boundary_intersection(num_runs, pull_utopia_from_file=True, skip_
             runtime
         ])
         completed_beta_keys.add(current_beta_key)
+        continuation_solution = {
+            "x": best_x.copy(),
+            "flight_time_hr": best_run["flight_time_hr"],
+            "thrust_to_weight": best_run["thrust_to_weight"],
+        }
 
     NBI_results_df = merge_results(NBI_csv_path, nbi_results)
     NBI_results_df.to_csv(NBI_csv_path, index=False)
