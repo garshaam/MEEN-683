@@ -751,34 +751,17 @@ def run_weighted_sum(num_lambdas, lambda_min=0.1, lambda_max=1, skip_existing_la
 
     print(f"\nSaved gradient method lambda sweep results to: {Gradient_csv_path}")
 
-def run_normal_boundary_intersection(num_runs, pull_utopia_from_file=True, skip_existing_points=True, use_topology_at_end=False):
+def run_normal_boundary_intersection(num_runs, skip_existing_points=True, use_topology_at_end=False):
     columns = [
         "Motor", "Battery", "Diameter", "Root Chord", "Tip Chord",
         "Root Pitch", "Tip Pitch", "Airfoil",
         "Beta", "NBI_t", "WeightedObjSum", "Flight Time [hr]", "Thrust to Weight", "Runtime [min]"
     ]
 
-    GA_csv_path = downloads_path / "prelim_GA_lambda_sweep_results.csv"
-    Gradient_csv_path = downloads_path / "post_gradient_lambda_sweep_results.csv"
     NBI_csv_path = downloads_path / "normal_boundary_intersection_results.csv"
 
     def beta_key(value):
         return round(float(value), 10)
-
-    def lambda_key(value):
-        return round(float(value), 10)
-
-    if not pull_utopia_from_file:
-        run_weighted_sum(2, 0, 1, skip_existing_lambdas=False)
-
-    if not Gradient_csv_path.exists():
-        raise FileNotFoundError(
-            f"Gradient results file not found: {Gradient_csv_path}. "
-            "Run weighted sum first, or call this function with pull_utopia_from_file=False."
-        )
-
-    gradient_df = pd.read_csv(Gradient_csv_path).sort_values("Lambda").reset_index(drop=True)
-    gradient_df["LambdaKey"] = gradient_df["Lambda"].apply(lambda_key)
 
     ft_span = FT_MAX - FT_MIN
     twr_span = TWR_MAX - TWR_MIN
@@ -826,12 +809,6 @@ def run_normal_boundary_intersection(num_runs, pull_utopia_from_file=True, skip_
         merged_df = merged_df[columns].sort_values("Beta").reset_index(drop=True)
 
         return merged_df
-
-    def nearest_gradient_seed(beta):
-        if gradient_df.empty:
-            raise ValueError("Gradient results CSV is empty; cannot generate NBI seeds.")
-        nearest_idx = (gradient_df["Lambda"] - beta).abs().idxmin()
-        return gradient_df.loc[nearest_idx, seed_columns].to_numpy(dtype=float)
 
     def load_lawnmower_seed_pool():
         flush_lawnmower_search(force=True)
@@ -1019,12 +996,6 @@ def run_normal_boundary_intersection(num_runs, pull_utopia_from_file=True, skip_
                     "source": "lawnmower"
                 })
 
-        seed_candidates.append({
-            "x": nearest_gradient_seed(beta),
-            "t0": 0.0,
-            "source": "gradient_fallback"
-        })
-
         deduped_candidates = []
         seen_keys = set()
         for candidate in seed_candidates:
@@ -1093,7 +1064,7 @@ def run_normal_boundary_intersection(num_runs, pull_utopia_from_file=True, skip_
 
 
 # Start of program
-#run_normal_boundary_intersection(10,False,True,False)
-run_weighted_sum(10,0,1,False,SEED_TYPE_FLIGHT_TIME)
+run_normal_boundary_intersection(10, True, False)
+#run_weighted_sum(10,0,1,False,SEED_TYPE_FLIGHT_TIME)
 
 flush_lawnmower_search(force=True)
